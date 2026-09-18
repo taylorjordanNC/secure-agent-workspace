@@ -12,7 +12,7 @@ spec:
         - nvidia
     - name: toolbox
       type: generic
-      enabled: false
+      enabled: true
       image: base
       providers:
         - nvidia

@@ -11,14 +11,14 @@ spec:
         - nvidia
     - name: cuda-sandbox
       type: nemoclaw
-      enabled: false
+      enabled: true
       agent: openclaw
       image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
       providers:
         - nvidia
     - name: toolbox
       type: generic
-      enabled: false
+      enabled: true
       image: base
       providers:
         - nvidia
