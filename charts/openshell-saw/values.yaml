@@ -87,6 +87,10 @@ openshell:
   # OpenShell binaries installed at provisioning time (not baked into golden image).
   gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.103-rhaiv.0"
   supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.103-rhaiv.0"
+  # Path to the supervisor binary on the VM. The docker driver is pointed at this
+  # (via [openshell.drivers.docker] supervisor_bin in cloud-init) so it does NOT
+  # try to pull the broken mutable ":dev" supervisor image at runtime.
+  supervisorBinPath: "/usr/local/bin/openshell-supervisor"
   version: "0.0.103+rhaiv.0"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
@@ -137,7 +141,11 @@ virtctlVersion: "v1.4.1"
 job:
   image: "registry.fedoraproject.org/fedora:44"
   backoffLimit: 2
-  activeDeadlineSeconds: 1800
+  # Max wall-clock for the setup Job. 1800s (30m) is fine on hardware-virtualized
+  # nodes, but on QEMU *software emulation* (no /dev/kvm — e.g. RHDP CNV / AWS) the
+  # golden-image bootstrap + binary pulls routinely exceed it and the Job dies with
+  # DeadlineExceeded. Bump to 5400s (90m) for emulation.
+  activeDeadlineSeconds: 5400
   # Wait for ESO-managed secrets before starting the setup Job.
   # Set to true when using Validated Pattern / External Secrets Operator.
   # Leave false for manual/quickstart path where secrets are created directly.

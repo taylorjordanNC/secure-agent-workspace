@@ -60,7 +60,7 @@ auto_detect_issuer() {
 discover_endpoints() {
   local well_known="${OIDC_ISSUER}/.well-known/openid-configuration"
   local config
-  config="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 "${well_known}" 2>/dev/null)" \
+  config="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 10 --max-time 30 "${well_known}" 2>/dev/null)" \
     || die "Failed to fetch OIDC discovery document from ${well_known}"
 
   AUTHORIZATION_ENDPOINT="$(echo "${config}" | jq -r '.authorization_endpoint // empty')"
@@ -142,7 +142,7 @@ else:
   [[ -n "${auth_code}" ]] || die "No authorization code received"
 
   local token_response
-  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 10 --max-time 30 -X POST "${TOKEN_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=authorization_code" \
     -d "client_id=${OIDC_CLIENT_ID}" \
@@ -159,11 +159,18 @@ else:
 do_device_login() {
   [[ -n "${DEVICE_AUTHORIZATION_ENDPOINT}" ]] || die "Device authorization endpoint not found. The OIDC provider may not support the device code flow. Try: OIDC_FLOW=browser"
 
+  # Client requires PKCE (pkce.code.challenge.method=S256), so the device
+  # authorization request must carry code_challenge/code_challenge_method and
+  # the token poll must carry the matching code_verifier.
+  generate_pkce
+
   local device_response
-  device_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${DEVICE_AUTHORIZATION_ENDPOINT}" \
+  device_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 10 --max-time 30 -X POST "${DEVICE_AUTHORIZATION_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "client_id=${OIDC_CLIENT_ID}" \
     -d "scope=openid email profile" \
+    -d "code_challenge=${CODE_CHALLENGE}" \
+    -d "code_challenge_method=S256" \
     2>/dev/null)" || die "Device authorization request failed"
 
   local device_code user_code verification_uri interval
@@ -188,11 +195,12 @@ do_device_login() {
   while (( SECONDS < deadline )); do
     sleep "${interval}"
     local token_response
-    token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+    token_response="$(curl -sSL ${CURL_TLS_OPTS} --connect-timeout 10 --max-time 30 -X POST "${TOKEN_ENDPOINT}" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
       -d "client_id=${OIDC_CLIENT_ID}" \
       -d "device_code=${device_code}" \
+      -d "code_verifier=${CODE_VERIFIER}" \
       2>/dev/null)" || true
 
     local error
@@ -264,7 +272,7 @@ do_refresh() {
   discover_endpoints
 
   local token_response
-  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 10 --max-time 30 -X POST "${TOKEN_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=refresh_token" \
     -d "client_id=${OIDC_CLIENT_ID}" \
