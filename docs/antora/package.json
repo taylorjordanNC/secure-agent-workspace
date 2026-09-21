@@ -1,0 +1,12 @@
+{
+  "name": "secure-agent-workspace-docs",
+  "private": true,
+  "scripts": {
+    "build": "antora site.yml",
+    "validate:docs": "bash scripts/validate.sh"
+  },
+  "devDependencies": {
+    "@antora/cli": "3.2.0",
+    "@antora/site-generator": "3.2.0"
+  }
+}

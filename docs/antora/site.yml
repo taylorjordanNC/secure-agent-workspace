@@ -1,0 +1,14 @@
+site:
+  title: Secure Agent Workspace
+  start_page: secure-agent-workspace:ROOT:deployment-guide.adoc
+content:
+  sources:
+    - url: ../..
+      branches: HEAD
+      start_path: docs/antora
+ui:
+  bundle:
+    url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/showroom-template/ui-bundle.zip
+    snapshot: true
+output:
+  dir: www

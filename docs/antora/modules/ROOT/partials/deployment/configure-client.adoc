@@ -1,0 +1,31 @@
+Confirm the guest and control-node versions before authenticating:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+export OPENSHELL_SAW_NAME={saw_gateway_name}
+virtctl -n {saw_namespace} ssh cloud-user@vm/$OPENSHELL_SAW_NAME \
+  --identity-file="$HOME/.generated-ssh-keys/sandbox-ssh" \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  --command "openshell-gateway --version"
+test "$(openshell --version | awk '{print $NF}')" = "{openshell_version}"
+----
+
+The VM must report `{openshell_saw_version}` and the control node must report
+`{openshell_version}`.
+
+For a workstation with a browser, use the browser OIDC flow:
+
+[source,bash,role="execute"]
+----
+make login OIDC_FLOW=browser
+make openshell-saw-configure-gateway \
+  OPENSHELL_SAW_NAME="$OPENSHELL_SAW_NAME"
+----
+
+For a remote bastion, use `OIDC_FLOW=device-code`. Open the printed URL on a
+machine with a browser and complete the flow there.
+
+The configure target extracts the gateway CA with `virtctl`, registers the
+gateway Route and Keycloak issuer, selects the gateway, and copies the cached
+OIDC token when available. It must run on the control node that holds the SSH
+key.

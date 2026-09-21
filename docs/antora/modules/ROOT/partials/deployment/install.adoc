@@ -1,0 +1,75 @@
+Mirror the four prebuilt quickstart images into the internal registry:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+make copy-images
+oc -n {saw_namespace} get istag/openshell-gateway:{openshell_version}
+oc -n {saw_namespace} get istag/openshell-gateway-docker:{openshell_version}
+oc -n {saw_namespace} get istag/nemoclaw-sandbox:{openshell_version}
+oc -n {saw_namespace} get istag/nemoclaw-cli:{openshell_version}
+----
+
+The explicit ImageStreamTag checks are required because the current mirror
+target can continue after an individual source-image failure. The target
+mirrors the Docker and Podman gateway images, the NemoClaw sandbox, and the
+NemoClaw CLI. Current BOM profiles still contain external NemoClaw and OpenClaw
+image references, so retain registry egress unless a reviewed deployment fork
+replaces those references with internal pull specs.
+
+The current `values-prod.yaml` also subscribes the Red Hat Developer Hub and
+Red Hat OpenShift AI operators. Account for their permissions and resource use,
+or disable those subscriptions in a reviewed deployment branch when they are
+not required.
+
+Install the pattern from the repository root:
+
+[source,bash,role="execute"]
+----
+./pattern.sh make install
+----
+
+The pattern installs its declared operators and applications, including
+OpenShift Virtualization, Vault and External Secrets, Keycloak, governance,
+the gateway VM, and the setup Job. It also loads `$HOME/values-secret.yaml`.
+
+If the cluster does not expose hardware virtualization, wait for the
+pattern-managed HCO resource and then enable software emulation:
+
+[source,bash,role="execute"]
+----
+until oc get hco kubevirt-hyperconverged -n openshift-cnv >/dev/null 2>&1; do
+  echo "Waiting for the HyperConverged resource..."
+  sleep 15
+done
+
+PATCH='[{"op":"add","path":"/spec/configuration/developerConfiguration/useEmulation","value":true}]'
+oc annotate hco kubevirt-hyperconverged -n openshift-cnv \
+  "kubevirt.kubevirt.io/jsonpatch=$PATCH" --overwrite
+
+oc get kubevirt kubevirt-kubevirt-hyperconverged -n openshift-cnv \
+  -o jsonpath='{.spec.configuration.developerConfiguration.useEmulation}{"\n"}'
+----
+
+Skip this annotation on KVM-capable clusters.
+
+Monitor Argo CD and wait for the setup Job to appear before following its logs:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get applications -n {saw_gitops_namespace}
+until oc get job/{saw_gateway_name}-setup -n {saw_namespace} >/dev/null 2>&1; do
+  echo "Waiting for the SAW setup Job..."
+  sleep 15
+done
+oc get dv,vm,vmi,job -n {saw_namespace}
+oc logs -f job/{saw_gateway_name}-setup -n {saw_namespace}
+----
+
+Log streaming remains in the foreground. In a second terminal, wait for
+completion; software emulation can take up to 90 minutes:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc wait --for=condition=complete job/{saw_gateway_name}-setup \
+  -n {saw_namespace} --timeout=5400s
+----

@@ -1,0 +1,54 @@
+Use one control node for cluster administration, image mirroring, OIDC login,
+and VM access. A RHEL 10 or Fedora bastion is the recommended path. A macOS
+control node is suitable when Podman and the browser login have been validated.
+Native Windows is not supported for this workflow; use a validated WSL2
+environment or connect to the bastion.
+
+Install these tools on the control node:
+
+* `oc` and `kubectl` matching the OpenShift cluster
+* Helm 3, Podman 4.3 or later, `virtctl`, Git, GNU Make, and `jq`
+* `curl`, OpenSSL, Python 3 with PyYAML, SSH, and `lsof`
+* OpenShell exactly `{openshell_version}`
+
+Obtain `oc` and `virtctl` from the OpenShift console client downloads so their
+versions match the cluster. On macOS, start the Podman machine before deploying:
+
+[source,bash,role="execute"]
+----
+podman machine init 2>/dev/null || true
+podman machine start
+----
+
+Install the pinned OpenShell client in a stable directory. This Linux x86_64
+example uses the release artifact directly:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+mkdir -p "$HOME/openshell-cli"
+curl -fsSL -o /tmp/openshell.tar.gz \
+  https://github.com/NVIDIA/OpenShell/releases/download/v{openshell_version}/openshell-x86_64-unknown-linux-musl.tar.gz
+tar xzf /tmp/openshell.tar.gz -C "$HOME/openshell-cli"
+chmod 0755 "$HOME/openshell-cli/openshell"
+export PATH="$HOME/openshell-cli:$PATH"
+hash -r
+----
+
+Use the Linux ARM64 or Apple Darwin archive from the same release when
+appropriate. Persist the `PATH` change in the control node's shell profile.
+
+Verify every dependency before continuing:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+command -v oc kubectl helm podman virtctl git make jq curl openssl python3 ssh lsof
+oc version --client
+helm version --short
+podman --version
+virtctl version --client
+test "$(openshell --version | awk '{print $NF}')" = "{openshell_version}"
+----
+
+Repeat the OpenShell version check in each new terminal used by the exercises.
+Newer clients are not interchangeable with this gateway build and can stall
+during login.

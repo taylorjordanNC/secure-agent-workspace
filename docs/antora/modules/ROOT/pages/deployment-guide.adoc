@@ -1,0 +1,43 @@
+= Secure Agent Workspace Fork Deployment Guide
+
+== Scope
+
+include::partial$deployment/scope.adoc[]
+
+== Prepare the control node
+
+include::partial$deployment/control-node.adoc[]
+
+== Verify cluster prerequisites
+
+include::partial$deployment/cluster-prerequisites.adoc[]
+
+== Clone and configure the fork
+
+include::partial$deployment/clone-and-secrets.adoc[]
+
+== Install the pattern
+
+include::partial$deployment/install.adoc[]
+
+== Configure OIDC and the CLI
+
+include::partial$deployment/configure-client.adoc[]
+
+== Validate the deployment
+
+include::partial$deployment/validate.adoc[]
+
+== Launch an agent
+
+include::partial$deployment/launch-agents.adoc[]
+
+== Inspect governance
+
+include::partial$deployment/governance.adoc[]
+
+== Clean up
+
+include::partial$deployment/cleanup.adoc[]
+
+For recovery procedures, see xref:troubleshooting.adoc[Troubleshooting].

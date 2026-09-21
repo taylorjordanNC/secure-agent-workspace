@@ -1,0 +1,22 @@
+name: secure-agent-workspace
+title: Secure Agent Workspace
+version: ~
+start_page: ROOT:deployment-guide.adoc
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    experimental: true
+    page-pagination: true
+    saw_repo_url: 'https://github.com/taylorjordanNC/secure-agent-workspace.git'
+    saw_repo_branch: 'saw-emulation-fixes'
+    saw_repo_dir: 'secure-agent-workspace'
+    saw_namespace: 'openshell-agents'
+    saw_gitops_namespace: 'vp-gitops'
+    saw_gateway_name: 'openshell-saw'
+    saw_workspace: 'cuda-dev'
+    saw_sandbox: 'cuda-sandbox'
+    openshell_version: '0.0.103'
+    openshell_saw_version: '0.0.103-rhaiv.0'
+    ocp_version: '4.22'

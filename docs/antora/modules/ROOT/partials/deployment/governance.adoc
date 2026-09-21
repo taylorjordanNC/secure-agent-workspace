@@ -1,0 +1,19 @@
+Inspect the deployed interceptor and its vended profiles without changing Git:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get deploy,pods -n {saw_namespace} \
+  -l app.kubernetes.io/name=governance-interceptor
+oc get configmap governance-interceptor-profiles -n {saw_namespace}
+openshell --gateway {saw_gateway_name} provider list-profiles
+----
+
+The configured allowlist and `fail_closed` behavior apply to the intercepted
+gateway RPC bindings, including provider and sandbox creation. Runtime network
+egress remains enforced by the sandbox policy and governance proxy.
+
+Persistent profile changes require a writable Git fork that Argo CD tracks.
+The helper script pushes `origin HEAD`; users who cloned this read-only
+deployment fork cannot use mutation targets until `origin` points to a
+repository they can push and the pattern tracks that revision. For a standard
+workshop, inspect the profiles rather than modifying shared Git state.

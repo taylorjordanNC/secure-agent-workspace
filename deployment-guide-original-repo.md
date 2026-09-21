@@ -25,8 +25,8 @@ You need **one** machine with the admin CLIs (`oc`, `helm`, `openshell`, `virtct
 
 | Option | What it is | Best for | CLI install | Client login (§6) |
 |---|---|---|---|---|
-| **A. RHEL 10 bastion** | RHDP demo-platform **"Base RHEL 10"** catalog item, used as the bastion | Cleanest supported **x86 Linux** env; recommended for running `pattern.sh` / `make install` | `dnf` + scripts below (identical to Fedora) | Headless → device-code / callback-replay |
-| **B. Fedora 44 bastion** | A Fedora 44 VM/instance | Same as A, if that's what you have | `dnf` + scripts below | Headless → device-code / callback-replay |
+| **A. RHEL 10 bastion** | RHDP demo-platform **"Base RHEL 10"** catalog item, used as the bastion | Cleanest supported **x86 Linux** env; recommended for running `pattern.sh` / `make install` | `dnf` + scripts below (identical to Fedora) | Browser callback / callback-replay |
+| **B. Fedora 44 bastion** | A Fedora 44 VM/instance | Same as A, if that's what you have | `dnf` + scripts below | Browser callback / callback-replay |
 | **C. macOS laptop** | Your local Mac | You already have the tooling locally; **best for the client login** (native browser) | Homebrew (below) | Native browser + `localhost` callback |
 
 **Two hard rules, whichever you pick:**
@@ -49,10 +49,13 @@ SSH into your Fedora 44 instance and follow **Step 1 / Step 2 (dnf)** below.
 Skip the dnf steps below and install the CLIs with Homebrew instead:
 
 ```bash
-brew install openshift-cli helm
+brew install openshift-cli helm podman jq openssl gettext python3 kubernetes-cli krew
 brew tap nvidia/openshell && brew install openshell   # ships the NEWEST client — see §6 version-match caveat
+export PATH="$(brew --prefix gettext)/bin:$PATH"
 kubectl krew install virt && ln -sf ~/.krew/bin/kubectl-virt ~/.krew/bin/virtctl && hash -r
-oc version --client ; helm version ; virtctl version --client ; openshell --version
+podman machine init 2>/dev/null || true
+podman machine start 2>/dev/null || true
+oc version --client ; helm version ; virtctl version --client ; openshell --version ; podman --version
 ```
 
 Then continue at §3. (macOS also has `podman`/`docker` for any local image builds.)
@@ -63,7 +66,7 @@ Log into your RHEL 10 / Fedora 44 instance and update the system packages:
 
 ```bash
 sudo dnf update -y
-sudo dnf install -y make python3-pip
+sudo dnf install -y git make podman python3-pip python3-pyyaml jq openssl curl wget tar gzip gettext
 ```
 
 ### Step 2 (dnf — Options A & B): Install essential CLI binaries
@@ -71,6 +74,9 @@ sudo dnf install -y make python3-pip
 Run the following to install the OpenShift (`oc`), Helm, and OpenShell CLIs on your bastion:
 
 ```bash
+# podman is required by pattern.sh, even though make itself runs in the utility container.
+podman --version
+
 # 1. Install OpenShift (oc) CLI
 wget https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz
 sudo tar -zxvf openshift-client-linux.tar.gz -C /usr/local/bin/
@@ -168,7 +174,8 @@ Once the operator is running, create the HyperConverged custom resource to initi
 
 ### Step 1: Check prerequisites
 
-With `oc` logged in, run the prerequisite check:
+With `oc` logged in, run the prerequisite check after the pattern-managed operators
+have had time to install:
 
 ```bash
 make check-prereqs
@@ -182,8 +189,8 @@ Checking operators...
 Error: RHBK operator found in namespace 'keycloak' but not in 'openshell-agents'.
 ```
 
-> **Known trap — do NOT blindly apply the OperatorGroup that `check-prereqs` suggests.** The suggested block creates an OperatorGroup named `openshell-agents-og`, but the pattern **already** creates `openshell-agents-operator-group` for that namespace. Two OperatorGroups → the RHBK/Keycloak CSV fails with `TooManyOperatorGroups`. Two ways to avoid it:
-> - **Preferred:** don't run `make check-prereqs` until the pattern has finished syncing (`oc get applications -n vp-gitops` all `Synced/Healthy`). ArgoCD installs RHBK into `openshell-agents` on its own; the `check-prereqs` error is usually just a timing artifact. If you must apply something manually, apply **only the Subscription**, never the OperatorGroup.
+> **Known trap — do NOT blindly apply the OperatorGroup that `check-prereqs` suggests.** The suggested block creates an OperatorGroup named `openshell-agents-og`, but the pattern **already** creates `openshell-agents-operator-group` for that namespace. Two OperatorGroups cause the RHBK/Keycloak CSV to fail with `TooManyOperatorGroups`. Two ways to avoid it:
+> - **Preferred:** don't run `make check-prereqs` until the pattern has finished syncing (`oc get applications -n vp-gitops` should show all applications `Synced/Healthy`). ArgoCD installs RHBK into `openshell-agents` on its own; the `check-prereqs` error is usually just a timing artifact. If you must apply something manually, apply **only the Subscription**, never the OperatorGroup.
 > - If you already applied it and hit `TooManyOperatorGroups`, delete the manual OperatorGroup (keep the ArgoCD-managed one — it has an `argocd.argoproj.io/tracking-id` annotation), then let the CSV recover:
 > ```bash
 > oc delete operatorgroup openshell-agents-og -n openshell-agents
@@ -249,23 +256,38 @@ make copy-images
 
 ### Step 5: Deploy the pattern
 
-The deploy runs inside the Validated Patterns utility container. The deploying branch must exist on the remote (`origin`); if deploying from a local-only branch, set `TARGET_REVISION` first.
+The deploy runs inside the Validated Patterns utility container. The utility container
+must be able to resolve the target branch from the Git remote. The stock repository
+uses `main`; do not deploy a local-only branch without publishing it first.
 
 ```bash
-# export TARGET_REVISION=main   # only if deploying from a local-only branch
+# If using a different published branch, select it explicitly:
+# export TARGET_BRANCH=main
 ./pattern.sh make install
 ```
 
-> **About the `openshell-saw-setup` Job (emulation + gateway config).** The pattern provisions the sandbox VM and configures the in-VM `openshell-gateway` via cloud-init + this Job. On QEMU **software emulation** (RHDP CNV / AWS, no `/dev/kvm`) the **stock/upstream pattern hits a gateway crash-loop**; there are two ways to deal with it:
+> **Upstream emulation caveat.** The stock pattern provisions the sandbox VM and
+> configures the in-VM `openshell-gateway` through cloud-init and the setup Job.
+> On QEMU **software emulation** (RHDP CNV / AWS, with no `/dev/kvm`) the stock
+> chart has three independent problems:
 >
-> **Path A — you control the chart (recommended if deploying from a fork).** Bake these three fixes into `charts/openshell-saw` and the deployment "just works," no VM surgery needed:
-> - `values.yaml` → `job.activeDeadlineSeconds: 5400` (was `1800`; under emulation the golden-image bootstrap + binary pulls exceed 30 min and the Job dies `DeadlineExceeded`).
-> - `templates/cloudinit-sandbox.yaml` → gateway env uses **`OPENSHELL_GATEWAY_CONFIG`** (not the old, ignored `OPENSHELL_CONFIG_FILE`) so `gateway.toml` is actually loaded.
-> - Same template → `gateway.toml` gets an `[openshell.drivers.docker]` table with `supervisor_bin = "/usr/local/bin/openshell-supervisor"`, so the docker driver uses the local supervisor binary instead of pulling the broken mutable `:dev` supervisor image.
+> - `job.activeDeadlineSeconds` is `1800`; golden-image bootstrap and binary pulls
+>   can exceed 30 minutes, causing `DeadlineExceeded`.
+> - Cloud-init writes `OPENSHELL_CONFIG_FILE`, but this gateway build reads
+>   `OPENSHELL_GATEWAY_CONFIG`, so `gateway.toml` is not loaded.
+> - The Docker driver has no `supervisor_bin` entry and tries to pull the mutable
+>   `ghcr.io/nvidia/openshell/supervisor:dev` image, which lacks `/openshell-sandbox`
+>   and crash-loops with a 404.
 >
-> **Path B — you are deploying the unmodified upstream pattern (no chart edits).** Proceed with `./pattern.sh make install` as-is. Under emulation the `openshell-saw-setup` Job will likely end `Failed` (`DeadlineExceeded`) and the gateway will crash-loop — **this is expected and recoverable.** The VM itself still comes up; you then apply the **one-time manual gateway remediation** in §6 (the "*If `sandbox list` returns `tls handshake eof`*" note). That remediation edits only the VM's `gateway.env`/`gateway.toml` and restarts the gateway — it is self-contained and does **not** require any chart change. After it, login + `sandbox list` work normally.
+> The VM can still become `Running`, so this is recoverable. Let the install finish
+> or fail, then apply the one-time VM remediation in §6 Step 3. Do not substitute
+> fork-only chart changes into this guide; they are documented in
+> `deployment-guide-fork.md`.
 >
-> Either way, after install give it time (emulation is slow), then check `oc get job openshell-saw-setup -n openshell-agents` and `oc get applications -n vp-gitops`. `openshell-saw` should be **Synced/Healthy** on Path A; it may read **Degraded** on Path B until you apply the manual fix — that alone does not block validation.
+> Under emulation, wait substantially longer than five minutes, then inspect
+> `oc get job openshell-saw-setup -n openshell-agents` and
+> `oc get applications -n vp-gitops`. A failed setup Job or a `Degraded` application
+> is expected until the remediation and BOM re-run are complete.
 
 ### Step 6: (If needed) recover a stuck deployment
 
@@ -332,6 +354,7 @@ curl -sSL -o openshell.tar.gz \
   https://github.com/NVIDIA/OpenShell/releases/download/v0.0.103/openshell-aarch64-apple-darwin.tar.gz
 tar xzf openshell.tar.gz
 xattr -d com.apple.quarantine ./openshell 2>/dev/null || true
+export PATH="$HOME/openshell-cli:$PATH"
 ./openshell --version                            # -> openshell 0.0.103
 
 # Linux x86_64:  openshell-x86_64-unknown-linux-musl.tar.gz
@@ -358,16 +381,28 @@ echo "gateway=$GW_HOST" ; echo "keycloak=$KC_HOST"
 
 > **Why `--oidc-issuer` (and not a bare `https://` add).** A bare `https://…` endpoint makes `openshell gateway add` treat the gateway as an **"edge-authenticated (cloud) gateway"** and open a gateway-hosted `/auth/connect?...` page that **spins forever** ("OpenShell — Authenticating…", auto-refreshing every 2s) — this gateway is a plain **OIDC+mTLS** gateway, not an edge proxy, so it never redirects you to Keycloak (Keycloak logs stay silent; the gateway logs only repeated `GET /auth/connect → 200`). `--oidc-issuer` drives the standard Keycloak authorization-code+PKCE login with a `http://localhost:<port>` redirect (which *is* in the `openshell-cli` client allowlist). mTLS here is *requested but not required* at the TLS layer — the OIDC token authorizes the call — so no client cert needs pre-provisioning.
 
-> **Headless / remote bastion (no local browser).** If you must run the client on a bastion, the `http://localhost:<port>` callback can't reach your laptop's browser. Use the **device-code flow** — `make login OIDC_FLOW=device-code` prints a URL + code you can open anywhere (the client requires PKCE; `scripts/oidc-login.sh` already sends `code_challenge`/`code_verifier`). Or the **callback-replay** trick: open the printed `127.0.0.1:<port>/callback?...&code=...` target by `curl`-ing it from a second bastion terminal within the auth-timeout window, using only that run's URL. The alternative `make openshell-saw-configure-gateway` bastion target needs `virtctl` **and** `~/.generated-ssh-keys/sandbox-ssh` on the same machine, and `export OPENSHELL_SAW_NAME=openshell-saw` first.
+> **Headless / remote bastion (no local browser).** In the original source,
+> `scripts/oidc-login.sh` does not send the PKCE challenge required by this
+> Keycloak client's device flow. Therefore `make login OIDC_FLOW=device-code`
+> fails with a PKCE/client error. Use `OIDC_FLOW=browser` with a browser on the
+> control node, forward the callback port over SSH, or use the callback-replay
+> workaround: open the printed authorization URL elsewhere and `curl` the exact
+> resulting `127.0.0.1:<port>/callback?...&code=...` URL from a second bastion
+> terminal before the callback request expires. The alternative
+> `make openshell-saw-configure-gateway` target needs `virtctl` **and**
+> `~/.generated-ssh-keys/sandbox-ssh` on the same machine; set
+> `export OPENSHELL_SAW_NAME=openshell-saw` first.
 
 ### Step 3: Verify connectivity
 
 ```bash
 ./openshell --gateway-insecure sandbox list
-# Success on a fresh deploy prints:  No sandboxes found.
 ```
 
-> **Gateway crash-loop fix — REQUIRED on the stock/upstream pattern under emulation (Path B in §5); also the fix if `sandbox list` returns `transport error` / `tls handshake eof`.** The gateway process inside the VM is crash-looping (this is *not* a client mTLS problem). **Root cause** (confirmed): the `openshell-saw-setup` job died with `DeadlineExceeded` (its `activeDeadlineSeconds=1800` is far too short for the golden-image bootstrap + binary pulls under **software emulation**), so it never finished wiring up the gateway config. Two follow-on defects are left behind in the VM's `~/.config/openshell/`:
+A successful upstream deploy creates `default/notebook` and
+`cuda-dev/cuda-sandbox`; an empty result means the setup Job did not apply the BOM.
+
+> **Gateway crash-loop fix — REQUIRED on the stock/upstream pattern under emulation; also the fix if `sandbox list` returns `transport error` / `tls handshake eof`.** The gateway process inside the VM is crash-looping (this is *not* a client mTLS problem). **Root cause** (confirmed): the `openshell-saw-setup` job died with `DeadlineExceeded` (its `activeDeadlineSeconds=1800` is far too short for the golden-image bootstrap + binary pulls under **software emulation**), so it never finished wiring up the gateway config. Two follow-on defects are left behind in the VM's `~/.config/openshell/`:
 > 1. `gateway.env` sets the config-file pointer with the **wrong variable name** — `OPENSHELL_CONFIG_FILE` — but this gateway build reads **`OPENSHELL_GATEWAY_CONFIG`** (see `openshell-gateway --help`). So `gateway.toml` is never loaded.
 > 2. `gateway.toml` has **no `[openshell.drivers.docker]` table**, so the docker driver has no `supervisor_bin` and falls back to *"Refreshing mutable docker supervisor image"* → pulls the broken default `ghcr.io/nvidia/openshell/supervisor:dev` (missing `/openshell-sandbox` → `Docker responded with status code 404`) and exits `status=1/FAILURE` on a 5-second restart loop.
 >
@@ -387,14 +422,14 @@ echo "gateway=$GW_HOST" ; echo "keycloak=$KC_HOST"
 >     CFG=$HOME/.config/openshell/gateway.toml; ENVF=$HOME/.config/openshell/gateway.env;
 >     cp "$CFG" "$CFG.bak"; cp "$ENVF" "$ENVF.bak";
 >     grep -q "openshell.drivers.docker" "$CFG" || printf "\n[openshell.drivers.docker]\nsupervisor_bin = \"/usr/local/bin/openshell-supervisor\"\n" >> "$CFG";
->     grep -v -E "^OPENSHELL_SANDBOX_IMAGE=|^OPENSHELL_GATEWAY_CONFIG=" "$ENVF" > "$ENVF.tmp";
+>     grep -v -E "^OPENSHELL_SANDBOX_IMAGE=|^OPENSHELL_CONFIG_FILE=|^OPENSHELL_GATEWAY_CONFIG=" "$ENVF" > "$ENVF.tmp";
 >     echo "OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml" >> "$ENVF.tmp"; mv "$ENVF.tmp" "$ENVF";
 >     systemctl --user daemon-reload; systemctl --user reset-failed openshell-gateway.service;
 >     systemctl --user restart openshell-gateway.service; sleep 12;
 >     systemctl --user show openshell-gateway.service -p ActiveState -p SubState -p NRestarts;
 >     sudo ss -tlnp | grep 17670 || echo "still not listening"'
 > ```
-> A healthy result is `ActiveState=active / SubState=running / NRestarts=0`, listening on `0.0.0.0:17670`, and logs showing `Compute driver connected configured_driver=docker` with **no** "Refreshing mutable docker supervisor image" line. You can confirm from anywhere with `echo | openssl s_client -connect <gateway-route-host>:443` — a successful handshake shows `subject=CN=openshell-server`. **The proper long-term fix is in the pattern:** raise the setup job's `activeDeadlineSeconds` for emulation, fix `OPENSHELL_CONFIG_FILE` → `OPENSHELL_GATEWAY_CONFIG`, and have it write the `[openshell.drivers.docker] supervisor_bin` table.
+> A healthy result is `ActiveState=active / SubState=running / NRestarts=0`, listening on `0.0.0.0:17670`, and logs showing `Compute driver connected configured_driver=docker` with **no** "Refreshing mutable docker supervisor image" line. You can confirm from anywhere with `echo | openssl s_client -connect <gateway-route-host>:443` — a successful handshake shows `subject=CN=openshell-server`. **The permanent chart fix would be:** raise the setup Job's `activeDeadlineSeconds` for emulation, fix `OPENSHELL_CONFIG_FILE` to `OPENSHELL_GATEWAY_CONFIG`, and have cloud-init write the `[openshell.drivers.docker] supervisor_bin` table. The fork guide documents those changes.
 
 ### Step 4: List sandboxes per workspace
 
@@ -454,6 +489,16 @@ Run the headless end-to-end test (it creates and tears down its own sandbox):
 make test
 ```
 
+> **E2E test caveats.** `scripts/e2e-test.sh` reads the provider API key only from
+> an inline `value:` field; it does not resolve a `path:` field from
+> `values-secret.yaml`. For the test, temporarily use an inline value or export
+> the provider variables expected by your local test workflow. The script also
+> defaults to a repository-local SSH key path, while `make generate-keys` writes
+> to `$HOME/.generated-ssh-keys`; pass the generated key explicitly:
+> ```bash
+> SSH_KEY_PATH="$HOME/.generated-ssh-keys/sandbox-ssh" make test
+> ```
+>
 > **Note:** on a cluster where Keycloak was installed by the pattern (not by `make test`), the E2E test's own Keycloak install step can fail with an ownership error such as `Secret "keycloak-db-secret" ... cannot be imported into the current release: ... missing key "app.kubernetes.io/managed-by"`. This is a conflict between the test's Helm release and the pattern-managed Keycloak, not a deployment failure.
 
 Run the offline template validation (no cluster needed):
@@ -492,11 +537,11 @@ virtctl -n openshell-agents ssh cloud-user@vm/openshell-saw \
 oc get configmap saw-bom-profiles -n openshell-agents
 ```
 
-**Fix — re-run the setup Job so it reaches the BOM-apply phase.** Because the VM and golden image are already up, a re-run reaches BOM apply quickly. Re-running is **gateway-safe**: the only pre-BOM phase that touches gateway config (`upgrade-openshell.sh`) merely `sed`-replaces the OIDC `issuer=` line and restarts the gateway — it does **not** remove the `[openshell.drivers.docker]` table or the `OPENSHELL_GATEWAY_CONFIG` env var, so a manually-applied gateway crash-loop fix (§6 Step 3) survives.
+**Fix — re-run the setup Job so it reaches the BOM-apply phase.** Because the VM and golden image are already up, a re-run reaches BOM apply quickly. Re-running can restart the gateway, so re-apply the §6 Step 3 remediation after the Job completes if the gateway returns to a crash loop.
 
 ```bash
-# Raise the deadline first if this is the stock/upstream pattern (default 1800s is too
-# short under emulation). If deploying from the fork, values.yaml already sets 5400.
+# Raise the deadline first. The stock/upstream chart defaults to 1800s, which is too
+# short under emulation.
 # The Job is ArgoCD-managed; deleting it triggers selfHeal to recreate it from the chart.
 oc delete job openshell-saw-setup -n openshell-agents
 
@@ -509,9 +554,9 @@ oc patch job openshell-saw-setup -n openshell-agents --type merge \
 # Follow progress until it reaches "BOM profiles applied":
 oc logs -f job/openshell-saw-setup -n openshell-agents
 
-# Then confirm the sandboxes exist:
+# Then confirm the two upstream sandboxes exist:
 openshell --gateway-insecure sandbox list                       # -> notebook (default)
 openshell --gateway-insecure sandbox list --workspace cuda-dev  # -> cuda-sandbox
 ```
 
-If a re-run keeps timing out even with a raised deadline, the sandbox containers themselves are slow to come up under emulation — check `oc logs job/openshell-saw-setup` for the BOM phase and give it more time. The permanent fix is to deploy from a fork that sets `job.activeDeadlineSeconds: 5400` (see §5, Path A).
+If a re-run keeps timing out even with a raised deadline, the sandbox containers themselves are slow to come up under emulation. Check `oc logs job/openshell-saw-setup` for the BOM phase and give it more time. The permanent chart-level fixes are documented in `deployment-guide-fork.md`.

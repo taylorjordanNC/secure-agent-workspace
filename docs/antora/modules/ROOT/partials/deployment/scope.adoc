@@ -1,0 +1,13 @@
+This guide deploys the fork at `{saw_repo_url}` from the
+`{saw_repo_branch}` branch. The fork targets OpenShift Virtualization clusters
+where KubeVirt might require QEMU software emulation, including clusters without
+`/dev/kvm`.
+
+The branch increases the setup Job deadline for emulation, configures the local
+Docker supervisor binary, adds PKCE support to device-code login, and enables
+five BOM-managed sandboxes across the `default` and `{saw_workspace}`
+workspaces.
+
+Run deployment commands from `$HOME/git/{saw_repo_dir}` unless a step states
+otherwise. Keep deployment changes in this fork; do not copy its charts or
+scripts into a consuming workshop repository.

@@ -1,0 +1,39 @@
+Launch NemoClaw in the CUDA development workspace:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+OPENSHELL_SAW_NAME={saw_gateway_name} \
+SANDBOX_NAME={saw_sandbox} \
+WORKSPACE={saw_workspace} \
+make nemoclaw-tui
+----
+
+This target connects through `openshell ssh-proxy` and starts the OpenClaw TUI.
+Press kbd:[Ctrl+C] or exit the TUI to return to the shell.
+
+Launch OpenClaw in the default workspace with `openshell sandbox exec`:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+OPENSHELL_SAW_NAME={saw_gateway_name} \
+SANDBOX_NAME=notebook \
+WORKSPACE=default \
+make openclaw-tui
+----
+
+To open the notebook's web UI, start the local forward in one terminal:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+OPENSHELL_SAW_NAME={saw_gateway_name} \
+SANDBOX_NAME=notebook \
+WORKSPACE=default \
+GUI_PORT=18790 \
+make openclaw-gui
+----
+
+The command prints a token-bearing local URL and remains in the foreground.
+Open the complete URL in a browser and use a second terminal for subsequent
+commands. Press kbd:[Ctrl+C] to stop the forward. The chart also enables a
+token-protected dashboard Route by default; the local forward is the preferred
+workshop access path, not proof that no Route exists.

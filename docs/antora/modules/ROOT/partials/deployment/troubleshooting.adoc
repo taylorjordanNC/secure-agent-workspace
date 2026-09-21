@@ -1,0 +1,46 @@
+== Setup Job or sandboxes are absent
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get applications -n {saw_gitops_namespace}
+oc get job/{saw_gateway_name}-setup -n {saw_namespace} -o yaml
+oc get configmap saw-bom-profiles -n {saw_namespace}
+oc get vm,vmi,dv -n {saw_namespace}
+----
+
+Resolve the reported Argo CD, operator, image, VM, or secret error before
+retrying. If the Job must be recreated, delete it and explicitly sync the
+`openshell-saw` Argo CD application from the web console; do not assume deletion
+alone will recreate it when self-heal is disabled.
+
+== Gateway is not listening
+
+[source,bash,role="execute",subs="attributes+"]
+----
+virtctl -n {saw_namespace} ssh cloud-user@vm/{saw_gateway_name} \
+  --identity-file="$HOME/.generated-ssh-keys/sandbox-ssh" \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  --command='grep -E "OPENSHELL_(GATEWAY_CONFIG|CONFIG_FILE)" ~/.config/openshell/gateway.env; grep -A2 "drivers.docker" ~/.config/openshell/gateway.toml; systemctl --user status openshell-gateway.service --no-pager; sudo ss -tlnp | grep 17670 || true'
+----
+
+The environment must use `OPENSHELL_GATEWAY_CONFIG`, and the Docker driver must
+reference `/usr/local/bin/openshell-supervisor`. If they do not, verify that
+Argo CD tracks `{saw_repo_branch}`.
+
+== Duplicate OperatorGroups
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get operatorgroup -n {saw_namespace}
+oc get operatorgroup -n openshift-cnv
+----
+
+Keep the Argo CD-managed OperatorGroup identified by its tracking annotation.
+Delete only a manually created duplicate.
+
+== OpenClaw UI is unavailable
+
+Current BOM automation starts the OpenClaw gateway in OpenClaw and NemoClaw
+sandboxes. Do not apply older instructions that start an unconfigured daemon
+manually. Confirm the sandbox is `Ready`, inspect the setup Job logs, and retry
+the appropriate `openclaw-gui` or `nemoclaw-gui` target.

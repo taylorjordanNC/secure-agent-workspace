@@ -1,0 +1,64 @@
+name: deploy docs
+
+on:
+  push:
+    branches: [saw-emulation-fixes]
+    paths:
+      - 'docs/antora/**'
+      - '.github/workflows/docs-pages.yml'
+  pull_request:
+    branches: [saw-emulation-fixes]
+    paths:
+      - 'docs/antora/**'
+      - '.github/workflows/docs-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: saw-docs-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/antora/package-lock.json
+      - name: install documentation dependencies
+        working-directory: docs/antora
+        run: npm ci
+      - name: validate documentation
+        working-directory: docs/antora
+        run: bash scripts/validate.sh
+      - name: audit documentation dependencies
+        working-directory: docs/antora
+        run: npm audit --omit=optional
+      - name: antora generate
+        working-directory: docs/antora
+        run: npx antora --log-failure-level warn site.yml
+      - name: upload pages artifact
+        if: github.ref == 'refs/heads/saw-emulation-fixes' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/antora/www
+  deploy:
+    if: github.ref == 'refs/heads/saw-emulation-fixes' && github.event_name != 'pull_request'
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: deploy github pages
+        id: deployment
+        uses: actions/deploy-pages@v4

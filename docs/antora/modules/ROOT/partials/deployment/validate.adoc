@@ -1,0 +1,24 @@
+Verify that the setup Job completed and that all five BOM entries are ready:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get job/{saw_gateway_name}-setup -n {saw_namespace}
+make openshell-saw-list
+openshell sandbox list
+openshell sandbox list --workspace {saw_workspace}
+----
+
+The `default` workspace contains `notebook`, `cuda-sandbox`, and `toolbox`.
+The `{saw_workspace}` workspace contains `{saw_sandbox}` and `toolbox`. An empty
+default list indicates an incomplete BOM application, an authentication problem,
+or selection of the wrong gateway.
+
+The name `{saw_sandbox}` exists in both workspaces. Always pass
+`--workspace {saw_workspace}` when operating on the CUDA development instance.
+
+If the token expires, refresh it without re-registering the gateway:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+openshell gateway login {saw_gateway_name}
+----

@@ -1,0 +1,6 @@
+= Secure Agent Workspace
+
+This component documents deployment of the `{saw_repo_branch}` branch of the
+Secure Agent Workspace fork.
+
+Start with xref:deployment-guide.adoc[the deployment guide].

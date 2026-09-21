@@ -1,0 +1,12 @@
+Remove the complete GitOps-managed pattern from the repository root:
+
+[source,bash,role="execute"]
+----
+./pattern.sh make uninstall
+----
+
+Do not use `make openshell-saw-delete` for the pattern-managed
+`openshell-saw` application. That target is for independently installed Helm
+releases, while Argo CD owns this deployment. Cleanup can take time while
+KubeVirt VMs, DataVolumes, and operator webhooks process finalizers. Do not
+force-delete resources until the normal uninstall has been diagnosed as stuck.

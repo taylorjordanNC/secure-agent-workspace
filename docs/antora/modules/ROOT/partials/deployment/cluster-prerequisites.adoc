@@ -1,0 +1,19 @@
+Use a multi-node OpenShift `{ocp_version}` or later cluster with cluster-admin
+access. An emulation test needs at least 16 CPUs and 32 GiB of memory; hardware
+virtualization provides substantially better performance.
+
+[source,bash,role="execute"]
+----
+oc whoami
+oc whoami --show-server
+oc get nodes
+oc get storageclass
+----
+
+The pattern installs OpenShift Virtualization through GitOps. Do not also
+install it manually from OperatorHub. Duplicate OperatorGroups can leave the
+operator in `TooManyOperatorGroups`.
+
+Do not run the HCO software-emulation command yet on a clean cluster. The HCO
+resource is created after pattern installation. The installation procedure
+waits for that resource before applying the emulation setting.
