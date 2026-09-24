@@ -436,15 +436,19 @@ nemoclaw-tui: .check-saw-name .check-gateway-ca ## Launch NemoClaw TUI (e.g. mak
 		-o LogLevel=ERROR \
 		-tt sandbox@openshell-$$SANDBOX.$(WORKSPACE) openclaw
 
+SAW_SANDBOX_TUI := $(if $(SANDBOX_NAME),$(SANDBOX_NAME),$(shell openshell --gateway $(OPENSHELL_SAW_NAME) sandbox list --workspace $(WORKSPACE) --names 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+' | head -1))
+
 openclaw-tui: .check-saw-name .check-gateway-ca ## Launch OpenClaw TUI (e.g. make openclaw-tui SANDBOX_NAME=notebook)
-	@if [ -n "$(SANDBOX_NAME)" ]; then \
-		SANDBOX="$(SANDBOX_NAME)"; \
-	else \
-		SANDBOX=$$(openshell --gateway $(OPENSHELL_SAW_NAME) sandbox list --workspace $(WORKSPACE) --names 2>/dev/null | grep -E '^[a-zA-Z0-9_-]+$$' | head -1); \
-	fi; \
-	if [ -z "$$SANDBOX" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)' workspace '$(WORKSPACE)'."; exit 1; fi; \
-	echo "Connecting to sandbox '$$SANDBOX' workspace '$(WORKSPACE)' (openclaw)..."; \
-	openshell sandbox exec -n $$SANDBOX --workspace $(WORKSPACE) --tty -- \
+	@if [ -z "$(SAW_SANDBOX_TUI)" ]; then echo "Error: No sandboxes found on gateway '$(OPENSHELL_SAW_NAME)' workspace '$(WORKSPACE)'."; exit 1; fi
+	@echo "Connecting to sandbox '$(SAW_SANDBOX_TUI)' workspace '$(WORKSPACE)' (openclaw)..."
+	@openshell --gateway $(OPENSHELL_SAW_NAME) sandbox exec -n $(SAW_SANDBOX_TUI) --workspace $(WORKSPACE) --no-tty -- \
+		/bin/bash -c 'export HOME=/sandbox OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0; nohup openclaw gateway run --allow-unconfigured --bind loopback --port 18789 >> /tmp/openclaw-gateway.log 2>&1 & sleep 1; exit 0'
+	@for i in $$(seq 1 60); do \
+		openshell --gateway $(OPENSHELL_SAW_NAME) sandbox exec -n $(SAW_SANDBOX_TUI) --workspace $(WORKSPACE) --no-tty -- \
+			curl -sf --max-time 3 http://127.0.0.1:18789/health >/dev/null 2>&1 && break; \
+		sleep 5; \
+	done
+	@openshell --gateway $(OPENSHELL_SAW_NAME) sandbox exec -n $(SAW_SANDBOX_TUI) --workspace $(WORKSPACE) --tty -- \
 		/bin/bash -ic 'export HOME=/sandbox OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0 TERM=xterm-256color; exec openclaw tui'
 
 openshell-saw-tui: .check-saw-name ## Launch TUI (alias for nemoclaw-tui)

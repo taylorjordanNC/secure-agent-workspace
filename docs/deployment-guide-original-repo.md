@@ -280,9 +280,21 @@ uses `main`; do not deploy a local-only branch without publishing it first.
 >   and crash-loops with a 404.
 >
 > The VM can still become `Running`, so this is recoverable. Let the install finish
-> or fail, then apply the one-time VM remediation in §6 Step 3. Do not substitute
-> fork-only chart changes into this guide; they are documented in
-> `deployment-guide-fork.md`.
+> or fail, then apply the one-time VM remediation in §6 Step 3.
+>
+> **Why the fixes are post-install on the stock repo.** The utility container deploys
+> charts from the remote branch — not your local working tree — so local edits to
+> `cloudinit-sandbox.yaml` or `values.yaml` never reach the deployment. The manual
+> interventions on the stock repo are therefore post-install, and each maps to a
+> permanent chart fix proposed on the fork:
+>
+> | Fork change | Stock-repo intervention |
+> |---|---|
+> | Cloud-init writes `OPENSHELL_GATEWAY_CONFIG` (not `OPENSHELL_CONFIG_FILE`) | In-VM `gateway.env` fix — §6 Step 3 |
+> | Cloud-init writes the `[openshell.drivers.docker] supervisor_bin` table | In-VM `gateway.toml` fix — §6 Step 3 |
+> | `values.yaml` raises `activeDeadlineSeconds` to `5400` | Patch the recreated setup Job — §7 empty-`sandbox list` fix |
+> | BOM enables `default/cuda-sandbox`, `default/toolbox`, `cuda-dev/toolbox` | Optional (workshop set only) — see the BOM note in §6 |
+> | `scripts/oidc-login.sh` sends PKCE on the device-code flow | Optional (headless logins only) — see §6 Step 2 |
 >
 > Under emulation, wait substantially longer than five minutes, then inspect
 > `oc get job openshell-saw-setup -n openshell-agents` and
@@ -329,6 +341,8 @@ The active `data-science` profile provisions:
 | `cuda-dev` | `toolbox` | generic | `base` | nvidia | ❌ false | No |
 
 So a healthy deploy comes up with exactly two sandboxes: **`default/notebook`** and **`cuda-dev/cuda-sandbox`**. Sandbox types: `openclaw` (OpenClaw agent onboarded inside the sandbox), `nemoclaw` (NVIDIA NemoClaw onboarded on the gateway VM via docker; `agent: openclaw` names the in-sandbox agent it drives), and `generic` (a plain shell sandbox on the `base` image, no agent). All sandboxes here use the `nvidia` provider (model `nvidia/nemotron-3-super-120b-a12b`, credential from the `inference` secret configured in §5).
+
+> **Workshop sandbox set (optional).** The table above is the **stock** repo state: `default/cuda-sandbox`, `default/toolbox`, and `cuda-dev/toolbox` are disabled. The workshop fork enables those three (`enabled: true`), giving five sandboxes. Because the utility container and Argo CD deploy charts from the remote branch — not your local working tree — enabling them on the stock repo requires publishing those edits to a branch the deploy and Argo CD track, or creating the additional sandboxes manually with `make openshell-saw-create` using matching provider/model parameters. For the standard deployment, the two upstream sandboxes above are sufficient.
 
 > **If `sandbox list` returns nothing**, the sandboxes were never created — almost always because the `openshell-saw-setup` Job failed before `apply_bom.py` ran (common under emulation), the `saw-bom-profiles` ConfigMap is missing, or you're querying the wrong workspace. See **Troubleshooting: empty `sandbox list`** at the end of this section.
 
@@ -392,6 +406,14 @@ echo "gateway=$GW_HOST" ; echo "keycloak=$KC_HOST"
 > `make openshell-saw-configure-gateway` target needs `virtctl` **and**
 > `~/.generated-ssh-keys/sandbox-ssh` on the same machine; set
 > `export OPENSHELL_SAW_NAME=openshell-saw` first.
+>
+> **Manual PKCE fix (optional, device-code logins only).** `scripts/oidc-login.sh`
+> runs on the control node, so a local edit takes effect immediately. In
+> `do_device_login`: call `generate_pkce` (already defined for the browser flow),
+> add `-d code_challenge=${CODE_CHALLENGE} -d code_challenge_method=S256` to the
+> device-authorization request, add `-d code_verifier=${CODE_VERIFIER}` to the
+> token poll, and poll with `-sSL` (not `-fsSL`) so `slow_down`/`expired_token`
+> error bodies are parsed. The fork carries the exact diff for this change.
 
 ### Step 3: Verify connectivity
 
