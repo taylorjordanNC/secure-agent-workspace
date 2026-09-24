@@ -184,6 +184,16 @@ dashboard:
   # Skip TLS verification for the OIDC issuer in oauth2-proxy.
   # Only enable for dev/lab clusters with self-signed Keycloak certs.
   insecureSkipIssuerTlsVerify: false
+  # Forward the primary sandbox's OpenClaw Control UI (VM:18789) via the
+  # gateway's native `openshell forward` RPC so the <name>-dashboard Route
+  # serves it. One sandbox only — the VM exposes a single 18789; other
+  # sandboxes use the openshell-saw-gui.sh tunnel. Empty = no forward, and
+  # the dashboard Route serves nothing (the daemon binds loopback inside
+  # the sandbox's nested namespace, which the Route path never reaches).
+  # Name AND workspace must both match the BOM profile sandbox.
+  uiForward:
+    sandbox: "cuda-sandbox"
+    workspace: "cuda-dev"
 
 # Governance interceptor — enforces signed sandbox policies.
 # Deployed as a Kubernetes pod, accessed from VM over the pod network.

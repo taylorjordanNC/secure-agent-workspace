@@ -14,6 +14,8 @@ Usage:
 """
 
 import argparse
+import base64
+import getpass
 import json
 import os
 import re
@@ -531,10 +533,77 @@ class WorkspaceDeployer:
         rc, _, _ = self.sh.run(cmd, env=env, check=False)
         return rc == 0
 
+    def install_ui_forward(self, sandbox_name, workspace_name):
+        """Install a systemd unit on the gateway VM that forwards VM:18789
+        into the sandbox's OpenClaw Control UI via the gateway's native
+        `openshell forward` RPC.
+
+        The chart's <name>-dashboard Route terminates at VM:18789, but the
+        daemon binds loopback inside the sandbox's nested network namespace,
+        which the Route path never traverses. Without this unit the Route
+        serves nothing. The gateway's authenticated ssh-proxy forward is the
+        supported bridge; a systemd unit keeps it alive across restarts.
+        """
+        log(f"Installing Control UI forward unit for '{sandbox_name}'")
+        # SELinux (Enforcing) denies exec from $HOME in a service context, so
+        # the CLI wrapper and real binary are copied to /usr/local/bin. The
+        # wrapper resolves openshell-real via its own directory, so both must
+        # be copied together.
+        self.sh.run([
+            "bash", "-c",
+            "CLI=$(which openshell) && "
+            "sudo cp \"$CLI\" \"$(dirname \"$CLI\")/openshell-real\" "
+            "/usr/local/bin/ && "
+            "sudo chmod 755 /usr/local/bin/openshell "
+            "/usr/local/bin/openshell-real",
+        ], check=False)
+        ws_arg = f" --workspace {workspace_name}" if workspace_name else ""
+        unit = "\n".join([
+            "[Unit]",
+            "Description=OpenClaw Control UI forward (VM:18789 -> sandbox)",
+            "After=network.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            f"User={getpass.getuser()}",
+            f"ExecStart=/usr/local/bin/openshell -g {self.gw.mtls_gw} "
+            f"forward start 0.0.0.0:18789 {sandbox_name}{ws_arg}",
+            "Restart=always",
+            "RestartSec=5s",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ])
+        b64 = base64.b64encode(unit.encode()).decode()
+        self.sh.run([
+            "bash", "-c",
+            f"echo {b64} | base64 -d | "
+            "sudo tee /etc/systemd/system/openshell-ui-forward.service "
+            "> /dev/null && "
+            "sudo systemctl daemon-reload && "
+            "sudo systemctl enable openshell-ui-forward.service && "
+            "sudo systemctl restart openshell-ui-forward.service",
+        ], check=False)
+        # The forward binds immediately (upstream connects on demand), but
+        # under emulation the CLI startup can lag — wait for the listener.
+        if not self.sh.dry_run:
+            for i in range(10):
+                rc, _, _ = self.sh.run(
+                    ["bash", "-c", "ss -ltn | grep -q ':18789 '"],
+                    check=False)
+                if rc == 0:
+                    log("Control UI forward active on VM:18789")
+                    return
+                log(f"  waiting for UI forward... (attempt {i + 1})")
+                time.sleep(3)
+            log("WARN: Control UI forward did not bind VM:18789")
+
     def start_openclaw_gateway(self, sandbox_name, dashboard_route,
                                workspace_name="default",
                                provider_id="nvidia",
-                               model_id="nvidia/nemotron-3-super-120b-a12b"):
+                               model_id="nvidia/nemotron-3-super-120b-a12b",
+                               ui_forward=False):
         import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
@@ -603,7 +672,7 @@ class WorkspaceDeployer:
                         f"OPENCLAW_NIX_MODE=0 && "
                         f"nohup openclaw gateway run "
                         f"--allow-unconfigured "
-                        f"--bind lan --port 18789 "
+                        f"--bind loopback --port 18789 "
                         f"> /tmp/openclaw-gateway.log "
                         f"2>&1 &"],
             check=False)
@@ -616,10 +685,17 @@ class WorkspaceDeployer:
                 ], check=False)
                 if rc == 0 and "ok" in out:
                     log("openclaw gateway ready")
-                    return
+                    break
                 log(f"  waiting for openclaw gateway... (attempt {i+1})")
                 time.sleep(3)
-            log("WARN: openclaw gateway health check failed")
+            else:
+                log("WARN: openclaw gateway health check failed")
+        # Install the forward regardless of the health check outcome: it
+        # binds immediately (upstream connects on demand), so it comes up
+        # once the daemon does — under emulation that can lag past the
+        # health-check window.
+        if ui_forward:
+            self.install_ui_forward(sandbox_name, workspace_name)
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +792,11 @@ def main():
     parser.add_argument("--mtls-gateway", default="openshell-local")
     parser.add_argument("--nemoclaw-cli-image", default="")
     parser.add_argument("--dashboard-route", default="")
+    parser.add_argument("--ui-forward-sandbox", default="",
+                        help="Sandbox whose Control UI the dashboard Route "
+                             "forwards to (name+workspace must both match)")
+    parser.add_argument("--ui-forward-workspace", default="",
+                        help="Workspace of the ui-forward sandbox")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -841,7 +922,9 @@ def main():
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
-                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b",
+                        ui_forward=(sb.name == args.ui_forward_sandbox
+                                    and ws.name == args.ui_forward_workspace))
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
@@ -852,7 +935,9 @@ def main():
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
-                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b",
+                        ui_forward=(sb.name == args.ui_forward_sandbox
+                                    and ws.name == args.ui_forward_workspace))
 
                 else:
                     # Generic: just create the sandbox

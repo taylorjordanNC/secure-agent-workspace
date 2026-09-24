@@ -5,6 +5,12 @@
 set -euo pipefail
 
 GATEWAY_NAME="${GATEWAY_NAME:?GATEWAY_NAME is required}"
+# SANDBOX_NAME/WORKSPACE are name-sensitive: the fallbacks below resolve to
+# the gateway name and the 'default' workspace, which is the WRONG sandbox if
+# your agent lives elsewhere (e.g. cuda-sandbox in workspace cuda-dev). A
+# tunnel to the wrong sandbox connects but the browser shows
+# ERR_EMPTY_RESPONSE because that sandbox's daemon is not running. Always set
+# SANDBOX_NAME and WORKSPACE explicitly unless your agent IS the default.
 SANDBOX_NAME="${SANDBOX_NAME:-${OPENSHELL_SAW_NAME:-${GATEWAY_NAME}}}"
 WORKSPACE="${WORKSPACE:-default}"
 GUI_PORT="${GUI_PORT:-18789}"

@@ -433,12 +433,15 @@ What to expect in the terminal:
   **`ERR_EMPTY_RESPONSE`** (or the page never loads), the tunnel is fine — the
   problem is that nothing is serving HTTP on `127.0.0.1:18789` *inside* the
   sandbox. The web UI (the OpenClaw "Control UI" / dashboard) is served by the
-  OpenClaw **gateway daemon**, and in an `openclaw`-type sandbox that daemon is
-  installed but **not running by default** (its systemd user service is disabled,
-  so `openclaw daemon status` reports `connect ECONNREFUSED 127.0.0.1:18789`).
-  This differs from NemoClaw sandboxes, whose dashboard is served by the NemoClaw
-  gateway container on the gateway VM and is up already. Confirm the cause and
-  start the daemon from inside the sandbox:
+  OpenClaw **gateway daemon**. The setup job (`apply_bom.py`) starts the
+  daemon for every enabled `openclaw`-type sandbox and installs a systemd unit
+  (`openshell-ui-forward.service`) on the gateway VM that forwards the
+  `<name>-dashboard` Route's port into the **primary** sandbox via the
+  gateway's native `openshell forward` RPC — that sandbox's UI is reachable
+  from the Route URL with no manual steps. Other sandboxes have the daemon
+  running but are only reachable through the tunnel targets above. If a
+  sandbox's daemon is nonetheless down (or the target sandbox is not the
+  forwarded primary), start it from inside the sandbox:
 
   ```bash
   # Confirm nothing is listening / no daemon:
@@ -457,6 +460,34 @@ What to expect in the terminal:
   `make openclaw-gui` in another terminal; the dashboard now loads. Under QEMU
   software emulation the gateway can take a while to bind `18789` — wait for the
   listener to appear before retrying the browser.
+
+  Note the tunnel targets are name-sensitive: the targets resolve `SANDBOX_NAME`
+  (falling back to the gateway name) and `WORKSPACE` (falling back to
+  `default`). A tunnel started with the defaults while your agent lives in
+  another workspace connects to the *wrong sandbox* — the browser then shows
+  `ERR_EMPTY_RESPONSE` because that sandbox's daemon is not running. Always pass
+  `SANDBOX_NAME`/`WORKSPACE` explicitly when your agent is not the default.
+
+### The dashboard Route (no tunnel needed for the primary sandbox)
+
+The `<name>-dashboard` Route is wired end-to-end by setup: Route →
+OpenShift Virtualization masquerade → gateway VM port 18789 →
+`openshell-ui-forward.service` (systemd, `Restart=always`) → authenticated
+`openshell forward` into the primary sandbox's nested namespace → the
+loopback-bound Control UI daemon. Get the URL and token:
+
+```bash
+TOKEN=$(openshell sandbox exec -n cuda-sandbox --workspace cuda-dev --no-tty -- \
+  cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('gateway',{}).get('auth',{}).get('token',''))")
+echo "https://$(oc get route openshell-saw-dashboard -n openshell-agents \
+  -o jsonpath='{.spec.host}')/#token=$TOKEN"
+```
+
+The `gateway.controlUi.allowedOrigins` value is set from the Route host by the
+setup job, so the browser origin validates. The `uiForward.sandbox` /
+`uiForward.workspace` chart values choose which sandbox the Route serves —
+one sandbox only, since the VM exposes a single UI port.
 
 ### Why the agents feel slow
 

@@ -145,8 +145,10 @@ guest_ssh "
     --profiles-dir ${BOM_DIR} \
     --oidc-gateway \${OPENSHELL_GATEWAY:-openshell} \
     --mtls-gateway openshell-local \
-    --nemoclaw-cli-image \"\${NEMOCLAW_CLI_IMAGE:-}\" \
-    --dashboard-route '${DASHBOARD_ROUTE_HOST}'
+    --nemoclaw-cli-image "\${NEMOCLAW_CLI_IMAGE:-}" \
+    --dashboard-route '${DASHBOARD_ROUTE_HOST}' \
+    --ui-forward-sandbox "${DASHBOARD_UI_FORWARD_SANDBOX:-}" \
+    --ui-forward-workspace "${DASHBOARD_UI_FORWARD_WORKSPACE:-}"
 " 2>&1
 
 echo "BOM profiles applied."
