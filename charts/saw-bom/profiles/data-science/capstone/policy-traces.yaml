@@ -1,3 +1,6 @@
+# OpenShell SandboxPolicy for the `traces` agent — deny-by-default.
+# The traces specialist (hermes) may reach ONLY the RHOAI MLflow tracking
+# server for OTLP trace ingest and trace queries; everything else is denied.
 version: 1
 
 filesystem_policy:
@@ -12,12 +15,6 @@ process:
   run_as_user: sandbox
   run_as_group: sandbox
 
-# The interceptor's policy manifest is the ceiling for what sandbox policies
-# may declare: the interceptor only signs network access it governs. These
-# endpoints are the platform-vended observability egress for the SRE copilot
-# capstone fleet — per-agent sandbox policies pick subsets of these (the
-# `metrics` agent gets only the Thanos querier, `traces` only the MLflow
-# server, `analyst` none), and the deny-by-default posture is preserved.
 network_policies:
   in-cluster-registry:
     name: in-cluster-registry
@@ -33,20 +30,14 @@ network_policies:
       - path: /usr/bin/node
       - path: /usr/local/bin/node
 
-  observability-egress:
-    name: observability-egress
+  tool-egress:
+    name: tool-egress
     endpoints:
-      - host: thanos-querier.openshift-monitoring.svc.cluster.local
-        port: 9091
-        protocol: rest
-        enforcement: enforce
-        access: read-only
       - host: mlflow.redhat-ods-applications.svc.cluster.local
         port: 8443
-        protocol: rest
-        enforcement: enforce
         access: read-write
+        protocol: rest
     binaries:
-      - path: /usr/bin/curl
       - path: /usr/bin/node
       - path: /usr/local/bin/node
+      - path: /usr/bin/curl
