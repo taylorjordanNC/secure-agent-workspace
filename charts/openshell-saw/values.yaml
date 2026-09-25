@@ -144,8 +144,10 @@ job:
   # Max wall-clock for the setup Job. 1800s (30m) is fine on hardware-virtualized
   # nodes, but on QEMU *software emulation* (no /dev/kvm — e.g. RHDP CNV / AWS) the
   # golden-image bootstrap + binary pulls routinely exceed it and the Job dies with
-  # DeadlineExceeded. Bump to 5400s (90m) for emulation.
-  activeDeadlineSeconds: 5400
+  # DeadlineExceeded. 5400s (90m) still proved too tight on this cluster (verified
+  # live: openshell-saw-setup failed with DeadlineExceeded); 10800s (3h) covers
+  # emulated bootstrap + BOM apply with headroom.
+  activeDeadlineSeconds: 10800
   # Wait for ESO-managed secrets before starting the setup Job.
   # Set to true when using Validated Pattern / External Secrets Operator.
   # Leave false for manual/quickstart path where secrets are created directly.
