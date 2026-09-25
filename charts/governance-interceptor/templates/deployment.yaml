@@ -58,4 +58,6 @@ spec:
         - name: profiles
           configMap:
             name: governance-interceptor-profiles
+      imagePullSecrets:
+        - name: quay-pull
 {{- end }}
