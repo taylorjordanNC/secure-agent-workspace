@@ -34,9 +34,9 @@ network_policies:
   tool-egress:
     name: tool-egress
     endpoints:
-      - host: thanos-querier.openshift-monitoring.svc.cluster.local
-        port: 9091
-        access: read-write
+      - host: telemetry-proxy.openshell-agents.svc.cluster.local
+        port: 8080
+        access: read-only
         protocol: rest
     binaries:
       - path: /usr/bin/node

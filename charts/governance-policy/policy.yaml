@@ -36,13 +36,13 @@ network_policies:
   observability-egress:
     name: observability-egress
     endpoints:
-      - host: thanos-querier.openshift-monitoring.svc.cluster.local
-        port: 9091
+      - host: telemetry-proxy.openshell-agents.svc.cluster.local
+        port: 8080
         protocol: rest
         enforcement: enforce
         access: read-only
-      - host: mlflow.redhat-ods-applications.svc.cluster.local
-        port: 8443
+      - host: telemetry-proxy.openshell-agents.svc.cluster.local
+        port: 8081
         protocol: rest
         enforcement: enforce
         access: read-write
