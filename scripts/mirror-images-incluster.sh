@@ -19,6 +19,16 @@ oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}" 2>/dev/nu
 
 for IMAGE in ${IMAGES}; do
   export IMAGE BUILD_NS QUAY_REPO VERSION
+  # Idempotent skip: a Completed Job means the image is already mirrored
+  # (skopeo verified the copy). Deleting a Completed job to re-run wastes
+  # minutes; this also lets a GitOps-managed copy and a manual Module 3
+  # `make copy-images` coexist — whichever ran first wins, the other is a
+  # no-op.
+  if oc -n "${BUILD_NS}" get job "mirror-${IMAGE}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q True; then
+    echo "${IMAGE}:${VERSION} already mirrored."
+    continue
+  fi
   echo "Mirroring ${IMAGE}:${VERSION}..."
   oc delete job "mirror-${IMAGE}" -n "${BUILD_NS}" 2>/dev/null || true
   # Only substitute template vars; leave runtime shell vars (e.g. ${TOKEN}) intact
