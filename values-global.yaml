@@ -1,6 +1,7 @@
 global:
   pattern: secure-agent-workspace
   singleArgoCD: true
+  sshPublicKey: ""
   secretLoader:
     disabled: false
 main:
