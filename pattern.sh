@@ -90,8 +90,17 @@ fi
 # $HOME is mounted as itself for any files that are referenced with absolute paths
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
+# Match the utility container platform to the host architecture. Forcing
+# linux/amd64 on Apple Silicon runs Go binaries under Rosetta, which crashes
+# some of them (helm: "lfstack.push invalid packing"); the container image is
+# multi-arch.
+UTILITY_PLATFORM="linux/amd64"
+case "$(uname -m)" in
+	arm64|aarch64) UTILITY_PLATFORM="linux/arm64" ;;
+esac
+
 podman run -it --rm --pull=newer \
-    --platform linux/amd64 \
+    --platform "$UTILITY_PLATFORM" \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
     -e DISABLE_VALIDATE_ORIGIN \
