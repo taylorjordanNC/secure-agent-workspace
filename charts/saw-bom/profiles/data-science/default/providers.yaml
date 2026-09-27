@@ -12,5 +12,6 @@ spec:
       credentialSecretKey: api_key
     - name: brave
       type: brave
+      enabled: false
       credentialSecret: web-search
       credentialSecretKey: api_key
