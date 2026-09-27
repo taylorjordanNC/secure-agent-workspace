@@ -47,7 +47,7 @@ clusterGroup:
     openshift-ai:
       name: rhods-operator
       namespace: redhat-ods-operator
-      channel: fast
+      channel: eus-3.5
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets
