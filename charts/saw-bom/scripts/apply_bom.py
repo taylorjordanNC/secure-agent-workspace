@@ -40,6 +40,7 @@ class Provider:
     credential_secret: str = ""
     credential_secret_key: str = "api_key"
     model: str = ""
+    endpoint: str = ""
 
 
 @dataclass
@@ -178,6 +179,7 @@ def parse_profiles(profiles_dir):
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
                         model=p.get("model", ""),
+                        endpoint=p.get("endpoint", ""),
                     ))
             sb_file = ws_entry / "sandbox.yaml"
             if sb_file.exists():
@@ -391,6 +393,15 @@ class WorkspaceDeployer:
                 "--name", provider.name, "--type", provider.type]
         if workspace_name != "default":
             args += ["--workspace", workspace_name]
+        # Custom upstream endpoint: the provider type's default endpoint is
+        # hardcoded (nvidia -> build.nvidia.com); an `endpoint` field in the
+        # BOM profile re-points the provider at an OpenAI-compatible gateway
+        # (e.g. a Model-as-a-Service endpoint). The gateway caches the
+        # provider's model catalog from creation, so this must be set at
+        # create time — a post-create update changes /models but not the
+        # chat route.
+        if provider.endpoint:
+            args += ["--config", f"endpoint={provider.endpoint}"]
         cred_key = PROVIDER_CRED_MAP.get(provider.type, "API_KEY")
         if credential and cred_key:
             args += ["--credential", f"{cred_key}={credential}"]
