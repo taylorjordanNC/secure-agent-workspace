@@ -6,11 +6,6 @@ spec:
     - name: nvidia
       type: nvidia
       nemoclawProvider: build
-      # glm-53-flash via the RHOAI MaaS endpoint (OpenAI-compatible). The
-      # endpoint re-points the provider from the type's hardcoded
-      # build.nvidia.com default; the api_key comes from the `inference`
-      # pattern secret (values-secret.yaml).
-      model: publishers/prelude-maas/models/glm-53-flash
-      endpoint: https://maas.apps.ocp.cloud.rhai-tmm.dev/v1
+      model: nvidia/nemotron-3-super-120b-a12b
       credentialSecret: inference
       credentialSecretKey: api_key
