@@ -433,22 +433,22 @@ class WorkspaceDeployer:
         is_full_ref = sandbox.image and ("/" in sandbox.image or ":" in sandbox.image)
         if is_full_ref:
             self.sh.run(["sudo", "docker", "pull", sandbox.image], check=False)
-    args = ["openshell", "sandbox", "create", "--name", sandbox.name]
-    if sandbox.image:
-        args += ["--from", sandbox.image]
-    if workspace_name != "default":
-        args += ["--workspace", workspace_name]
-    # Signed policy manifest applied at create — governance-scoped fleet
-    # agents carry their policy from the BOM profile's policy-*.yaml.
-    if sandbox.policy:
-        args += ["--policy", sandbox.policy]
-    for prov in sandbox.providers:
-        args += ["--provider", prov]
-    if not sandbox.providers:
-        # Provider-less sandboxes (the capstone fleet) must not auto-attach
-        # the workspace's providers — the analyst's zero egress depends on it.
-        args += ["--no-auto-providers"]
-    args += ["--no-tty", "--", "sh", "-c", "echo sandbox-ready"]
+        args = ["openshell", "sandbox", "create", "--name", sandbox.name]
+        if sandbox.image:
+            args += ["--from", sandbox.image]
+        if workspace_name != "default":
+            args += ["--workspace", workspace_name]
+        # Signed policy manifest applied at create — governance-scoped fleet
+        # agents carry their policy from the BOM profile's policy-*.yaml.
+        if sandbox.policy:
+            args += ["--policy", sandbox.policy]
+        for prov in sandbox.providers:
+            args += ["--provider", prov]
+        if not sandbox.providers:
+            # Provider-less sandboxes (the capstone fleet) must not auto-attach
+            # the workspace's providers — the analyst's zero egress depends on it.
+            args += ["--no-auto-providers"]
+        args += ["--no-tty", "--", "sh", "-c", "echo sandbox-ready"]
         rc, out, err = self.sh.run(args, check=False)
         combined = re.sub(r'\x1b\[[0-9;]*m', '',
                           (out or "") + " " + (err or ""))
