@@ -1,0 +1,21 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandboxes
+metadata: {}
+spec:
+  sandboxes:
+    # Governance-scoped fleet agents — each carries a different signed policy
+    # (policy-*.yaml in this directory, applied at sandbox create). No
+    # inference providers: the agents are CLI-driven and the zero-egress
+    # analyst must stay that way.
+    - name: metrics
+      type: generic
+      enabled: true
+      policy: policy-metrics.yaml
+    - name: traces
+      type: generic
+      enabled: true
+      policy: policy-traces.yaml
+    - name: analyst
+      type: generic
+      enabled: true
+      policy: policy-analyst.yaml

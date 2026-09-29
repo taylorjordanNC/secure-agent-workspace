@@ -1,0 +1,9 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Workspace
+metadata:
+  # The fleet sandboxes live in the gateway's default workspace so the
+  # module's exec commands omit --workspace.
+  name: default
+  description: "SRE capstone fleet workspace — governance-scoped telemetry agents"
+spec:
+  enabled: true
