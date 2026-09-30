@@ -37,7 +37,22 @@ for IMAGE in ${IMAGES}; do
     | oc apply -n "${BUILD_NS}" -f -
   oc -n "${BUILD_NS}" wait --for=condition=complete \
     job/"mirror-${IMAGE}" --timeout=600s
-  oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null || true
+  # Tag :latest — the setup Job's golden-image DV import pulls it; a missing
+  # :latest deadlocks the import in a crash loop and the VM never provisions.
+  # Retry: the source tag can take a beat to become readable after the job
+  # completes. Never swallow this failure silently.
+  local_tag_ok=0
+  for _ in 1 2 3; do
+    if oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null; then
+      local_tag_ok=1
+      break
+    fi
+    sleep 10
+  done
+  if [ "$local_tag_ok" -ne 1 ] || \
+     ! oc -n "${BUILD_NS}" get is "${IMAGE}" -o jsonpath='{.spec.tags[*].name}' 2>/dev/null | grep -qw latest; then
+    echo "WARN: ${IMAGE}:latest tag missing after retries — the golden-image DV import will crash-loop until it exists" >&2
+  fi
   echo "  ${IMAGE} done."
 done
 
