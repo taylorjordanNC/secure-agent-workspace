@@ -27,6 +27,14 @@ for IMAGE in ${IMAGES}; do
   if oc -n "${BUILD_NS}" get job "mirror-${IMAGE}" \
       -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q True; then
     echo "${IMAGE}:${VERSION} already mirrored."
+    # The image may have been mirrored by the order's chart without the
+    # :latest tag the golden-image DV import pulls — ensure the tag on the
+    # skip path too, otherwise the import crash-loops and the VM never
+    # provisions.
+    if ! oc -n "${BUILD_NS}" get is "${IMAGE}" -o jsonpath='{.spec.tags[*].name}' 2>/dev/null | grep -qw latest; then
+      oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null || \
+        echo "WARN: could not tag ${IMAGE}:latest on the skip path — the golden-image DV import will crash-loop until it exists" >&2
+    fi
     continue
   fi
   echo "Mirroring ${IMAGE}:${VERSION}..."
