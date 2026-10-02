@@ -19,13 +19,12 @@ def test_shipped_profile_parses(ab, shipped_profile_files):
     assert set(workspaces) == {"default", "cuda-dev"}
     default = workspaces["default"]
     assert [(p.name, p.type, p.credential_secret) for p in default.providers] == [
-        ("nvidia", "nvidia", "inference"), ("brave", "brave", "web-search")]
+        ("nvidia", "nvidia", "inference"), ("tavily", "tavily", "web-search")]
     assert default.providers[0].nemoclaw_provider == "build"
     notebook = next(s for s in default.sandboxes if s.name == "notebook")
     assert notebook.type == "openclaw" and notebook.enabled and notebook.providers == ["nvidia"]
     assert [s.name for s in default.sandboxes if not s.enabled] == ["cuda-sandbox", "toolbox"]
-    # brave ships disabled (workshop default: shared NGC key, no web-search egress).
-    assert not default.providers[1].enabled
+    assert default.providers[1].enabled
 
 
 def test_shipped_profile_is_valid(ab, shipped_profile_files):
@@ -146,8 +145,7 @@ def test_nemoclaw_sandbox_needs_nemoclaw_in_bom(ab, bom, shipped_profile_files):
 def test_credentials_resolve_from_mounted_secrets(ab, shipped_profile_files, secrets_dir):
     profiles = ab.parse_profiles(shipped_profile_files)
     creds = ab.resolve_credentials(profiles, secrets_dir)
-    # brave ships disabled (workshop default), so it is not resolved.
-    assert creds == {"default": {"nvidia": "nvapi-TEST-KEY-123"},
+    assert creds == {"default": {"nvidia": "nvapi-TEST-KEY-123", "tavily": "tavily-TEST-KEY-456"},
                      "cuda-dev": {"nvidia": "nvapi-TEST-KEY-123"}}
 
 

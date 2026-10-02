@@ -24,20 +24,6 @@ def creds(ab, profiles, secrets_dir):
     return ab.resolve_credentials(profiles, secrets_dir)
 
 
-@pytest.fixture
-def brave_profiles(ab, profiles):
-    """The shipped workshop profile disables the brave web-search provider;
-    tests exercising its paths re-enable it."""
-    next(p for ws in (w for _, w in ab.enabled_workspaces(profiles))
-         for p in ws.providers if p.name == "brave").enabled = True
-    return profiles
-
-
-@pytest.fixture
-def brave_creds(ab, brave_profiles, secrets_dir):
-    return ab.resolve_credentials(brave_profiles, secrets_dir)
-
-
 def test_first_apply_adopts_and_deletes_nothing(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
@@ -133,19 +119,19 @@ def _drop_provider(profiles, workspace, name):
                 ws.providers = [p for p in ws.providers if p.name != name]
 
 
-def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, brave_profiles, brave_creds, tmp_path, capsys):
+def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     report = {**config, "prune": {"mode": "report", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), report, brave_creds).apply(brave_profiles)
-    _drop_provider(brave_profiles, "default", "brave")
+    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    _drop_provider(profiles, "default", "tavily")
     before = [c for c in fake_env.openshell_calls() if "delete" in c]
-    ab.ProfileApplier(ab.Shell(), report, brave_creds).apply(brave_profiles)
-    assert "default/brave" in fake_env.openshell_state()["providers"]
+    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    assert "default/tavily" in fake_env.openshell_state()["providers"]
     assert [c for c in fake_env.openshell_calls() if "delete" in c] == before
-    assert "would delete provider default/brave" in capsys.readouterr().out
+    assert "would delete provider default/tavily" in capsys.readouterr().out
     on = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), on, brave_creds).apply(brave_profiles)
-    assert "default/brave" not in fake_env.openshell_state()["providers"]
+    ab.ProfileApplier(ab.Shell(), on, creds).apply(profiles)
+    assert "default/tavily" not in fake_env.openshell_state()["providers"]
 
 
 def test_hand_made_workspace_and_provider_are_never_deleted(ab, fake_env, config, profiles, creds, tmp_path):
@@ -344,26 +330,26 @@ def test_post_adoption_workspace_is_pruned_from_equals_labels(
 
 
 def test_failed_provider_delete_stays_in_the_ledger(
-        ab, fake_env, config, brave_profiles, brave_creds, tmp_path, capsys):
+        ab, fake_env, config, profiles, creds, tmp_path, capsys):
     """A provider still attached to a sandbox (here, one the ledger does not
     track) makes the CLI fail. The installer must not log success or drop
     the ledger entry; status.json copies lastPrune, so the provider is not
     recorded as pruned either."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, brave_creds).apply(brave_profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     state = fake_env.openshell_state()
-    state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["brave"], "phase": "Ready"}
+    state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["tavily"], "phase": "Ready"}
     fake_env.set_openshell_state(state)
-    _drop_provider(brave_profiles, "default", "brave")
-    ab.ProfileApplier(ab.Shell(), cfg, brave_creds).apply(brave_profiles)
+    _drop_provider(profiles, "default", "tavily")
+    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
     out = capsys.readouterr().out
-    assert "default/brave" in fake_env.openshell_state()["providers"]
+    assert "default/tavily" in fake_env.openshell_state()["providers"]
     assert "default/hand" in fake_env.openshell_state()["sandboxes"]
-    assert "brave" in _ledger_names(ledger, "provider")
+    assert "tavily" in _ledger_names(ledger, "provider")
     pruned = json.loads(ledger.read_text())["lastPrune"]["pruned"]
-    assert "provider default/brave" not in pruned
-    assert "deleted provider default/brave" not in out
+    assert "provider default/tavily" not in pruned
+    assert "deleted provider default/tavily" not in out
     assert "delete failed" in out
 
 
