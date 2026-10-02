@@ -47,11 +47,10 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `openshift-cnv` | `openshift-cnv` | KubeVirt operator for VM lifecycle |
 | `vault` | `vault` | HashiCorp Vault for secret storage |
 | `openshift-external-secrets` | `external-secrets` | External Secrets Operator |
-| `pattern-secrets` | `openshell-agents` | ExternalSecret CRs that pull from Vault |
-| `openshell-keycloak` | `openshell-agents` | Keycloak OIDC provider + realm |
+| `saw-users` | `openshell-agents` | One namespace and three apps per user, from `overrides/saw-users.yaml` |
+| `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
 | `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
-| `openshell-saw` | `openshell-agents` | VM + setup Job + routes + services |
 
 **Operator Subscriptions:** OpenShift Virtualization, RHBK (Keycloak), External Secrets Operator, RHDH, OpenShift AI.
 
@@ -83,13 +82,16 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 ### Phase 3: Secrets
 
-Three ExternalSecret CRs pull from Vault:
+ExternalSecret CRs pull from Vault:
 
 | Secret | Vault Path | Content |
 | --- | --- | --- |
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key |
+
+`<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
 ### Phase 4: Governance Policy
 
@@ -100,38 +102,54 @@ The `governance-policy` chart creates two ConfigMaps from files in the chart:
 
 The `governance-interceptor` chart deploys the interceptor pod, which mounts both ConfigMaps and serves them over gRPC. See [governance-interceptor.md](governance-interceptor.md) for the full enforcement flow.
 
-### Phase 5: VM Boot + Setup
+### Phase 5: VM Boot + In-guest installer
+
+The VM boots from a clone of the golden image. Nothing logs in over SSH to install it. See [Versioned BOM installer](versioned-bom-installer.md).
 
 #### Cloud-init
 
-The VM boots from a clone of the golden image. Cloud-init (rendered by the `cloudinit-sandbox.yaml` template) configures:
+Cloud-init runs once and writes the static files: the mount script, the `saw-install` and `saw-apply` units, first-boot copies of `gateway.env` and `gateway.toml`, and (only when `vm.liveInputs` is true) the reconcile units. SSH keys are not in this Secret. KubeVirt `accessCredentials` writes `cloud-user`'s `authorized_keys` from the `<name>-ssh-pubkey` Secret.
 
-- SSH authorized keys for `cloud-user`
-- `/etc/openshell/gateway.env` — bind address, port, TLS paths, driver config
-- `/etc/openshell/gateway.toml` — OIDC issuer/audience, governance interceptor endpoint and bindings
-- Starts `openshell-gateway-setup.service` which bootstraps the gateway user service
+#### Prepare Job
 
-#### Setup Job
+The chart's prepare Job stays on the cluster. It bootstraps the golden image DataSource and registers the dashboard redirect URI in Keycloak. It does not install binaries or apply profiles.
 
-A Kubernetes Job (`openshell-saw-setup`) runs after the VM boots. It:
+#### Guest
 
-1. **Waits for secrets** (init container) — blocks until ESO has created `openshell-aap-ssh` and `inference` secrets
-2. **Bootstraps golden image** — creates DataVolume/DataSource if missing, waits for CDI import
-3. **Creates cloud-init Secret** — substitutes the SSH public key into the template ConfigMap
-4. **Waits for VM** — DataVolume ready, VMI running, SSH reachable, cloud-init complete
-5. **Installs binaries** — pulls gateway and supervisor container images via Docker on the VM, extracts binaries, installs openshell CLI via pip
-6. **Restarts gateway** with new binaries
-7. **Copies scripts** to VM — `run-create.sh`, `setup-nemoclaw.sh`, `configure-vertex-user.sh`, `setup-dashboard.sh`
-8. **Fetches OIDC token** from Keycloak for the sandbox owner
-9. **Registers dashboard redirect URI** on the Keycloak client via Admin API
-10. **Executes `run-create.sh`** on the VM, which:
-    - Configures inference provider with API credentials
-    - Registers mTLS local gateway (`openshell-local`) and OIDC remote gateway
-    - Runs `nemoclaw onboard` in externally-supervised mode
-    - Creates sandbox from the configured image
-    - Starts the agent web UI (openclaw) inside the sandbox on port 18789
-    - Injects SSH public key into the sandbox
-    - Starts the dashboard + OAuth2 proxy as Docker containers
+`saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, and sandboxes, and attaches each sandbox's providers (OpenShell 0.1.x has no inference routes: agents call their provider's own endpoint). The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
+
+## Upgrading from the single-user layout
+
+Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
+the `saw-alice` namespace and the `openshell-saw`, `saw-bom` and
+`pattern-secrets` applications (VM `openshell-saw`). Upgrading an existing
+install does not remove them: the pattern's top-level application syncs
+without pruning, so the old applications keep running next to the new
+`saw-alice*` ones and both manage the same ExternalSecrets and ConfigMap in
+`saw-alice`.
+
+Remove the old applications **without cascading**. Every pattern application
+carries the `resources-finalizer.argocd.argoproj.io/foreground` finalizer, so
+a plain `oc delete application` would also delete the ExternalSecrets and the
+`saw-bom-profiles` ConfigMap that the new applications now use.
+
+```bash
+ARGO_NS=vp-gitops   # the pattern's Argo CD namespace (global.vpArgoNamespace)
+for app in openshell-saw saw-bom pattern-secrets; do
+  oc -n "$ARGO_NS" patch application "$app" --type json \
+    -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+  oc -n "$ARGO_NS" delete application "$app"
+done
+# The old VM and its disk are no longer managed; delete them.
+oc -n saw-alice delete vm openshell-saw
+oc -n saw-alice delete datavolume openshell-saw-root --ignore-not-found
+```
+
+The `saw-alice*` applications keep the shared objects in place (they self-heal
+anything removed). Alice's new VM is `alice` in `saw-alice`: use
+`OPENSHELL_SAW_NAME=alice`. Sandboxes and files inside the
+old VM are not migrated; the new VM recreates the profile's workspaces and
+sandboxes.
 
 ## Network Architecture
 
@@ -149,14 +167,14 @@ A Kubernetes Job (`openshell-saw-setup`) runs after the VM boots. It:
 | --- | --- | --- | --- |
 | Gateway (VM) | Governance interceptor (pod) | gRPC over HTTP | Policy enforcement |
 | Gateway (VM) | Keycloak (pod) | HTTPS | OIDC token validation |
-| Setup Job (pod) | VM | SSH (via virtctl) | Binary install, configuration |
+| In-guest installer | mounted ConfigMaps and Secrets | virtiofs or iso9660 | Install binaries and apply profiles |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
 
 ### Authentication Flows
 
 - **CLI:** `openshell gateway login` triggers OIDC device code flow via Keycloak. Token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
-- **Internal (nemoclaw):** mTLS client certificate, registered as `openshell-local` gateway on the VM.
+- **In-guest installer:** its own mTLS client certificate, `CN=saw-installer` and `OU=openshell-admin`, registered as the `saw-installer` gateway entry. Users still use OIDC.
 
 ## Operator Quick Reference
 

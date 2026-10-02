@@ -1,0 +1,34 @@
+[Unit]
+Description=SAW installer step 1: install BOM components and start the gateway
+Wants=network-online.target
+# After multi-user.target, like the golden image's openshell-gateway-setup
+# (which is After=multi-user.target): without it, WantedBy=multi-user.target
+# would make the target wait for this unit, an ordering cycle that makes
+# systemd delete the job at boot. It also keeps image pulls off the boot path.
+After=network-online.target multi-user.target openshell-gateway-setup.service
+# On first boot cloud-init starts this after the golden image's first-boot
+# setup has finished; on later boots it runs on its own.
+ConditionPathExists=/var/lib/openshell-gateway-setup.done
+StartLimitIntervalSec=1h
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/sbin/saw-mount-inputs
+# The verifier lives in the golden image, not in the ConfigMap it checks.
+# It stages the installer tree into /var/lib/saw/verified/installer and
+# apply_bom.py always runs from that staged copy, never the live mount
+# (closes a TOCTOU window between this check and ExecStart -- PR #54
+# review, 2). An image built before signing was added has no verifier:
+# warn and off continue (unverified), enforce refuses to run the installer.
+ExecStartPre=/usr/local/sbin/saw-stage-installer
+ExecStart=/usr/local/sbin/saw-with-lock /usr/bin/python3 /var/lib/saw/verified/installer/apply_bom.py install --installer-dir /var/lib/saw/verified/installer
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=30min
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

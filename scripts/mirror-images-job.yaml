@@ -23,17 +23,30 @@ spec:
           set -euo pipefail
           mkdir -p "${HOME}" "${XDG_RUNTIME_DIR}"
           TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          # quay tags have been published as X.Y.Z, vX.Y.Z or only latest:
+          # use the first that exists and store it as the requested version.
+          WANTED="${VERSION}"
+          SRC=""
+          for TAG in "${WANTED}" "v${WANTED#v}" latest; do
+            if skopeo inspect --raw "docker://${QUAY_REPO}/${IMAGE}:${TAG}" >/dev/null 2>&1; then
+              SRC="${TAG}"; break
+            fi
+            echo "no tag ${TAG} on ${QUAY_REPO}/${IMAGE}"
+          done
+          if [ -z "${SRC}" ]; then echo "ERROR: none of the tags exist"; exit 1; fi
+          echo "Copying ${QUAY_REPO}/${IMAGE}:${SRC}"
           skopeo copy --src-tls-verify=true --dest-tls-verify=false \
             --dest-creds="unused:${TOKEN}" \
-            "docker://${QUAY_REPO}/${IMAGE}:${VERSION}" \
-            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${VERSION}"
-          # Also tag as :latest — the setup Job's golden-image import
+            "docker://${QUAY_REPO}/${IMAGE}:${SRC}" \
+            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${WANTED}"
+          # Also tag as :latest — the golden-image DV import
           # (bootstrap-golden-image.sh) pulls :latest from the internal
           # registry, and a missing tag deadlocks the DV import in
-          # ImagePullBackOff.
+          # ImagePullBackOff. Done in-job because the order chart applies
+          # this Job directly (GitOps) and no script runs to `oc tag`.
           skopeo copy --src-tls-verify=false --dest-tls-verify=false \
             --src-creds="unused:${TOKEN}" \
             --dest-creds="unused:${TOKEN}" \
-            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${VERSION}" \
+            "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${WANTED}" \
             "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:latest"
-          echo "Mirror complete: ${IMAGE}:${VERSION} (also tagged :latest)"
+          echo "Mirror complete: ${IMAGE}:${SRC} -> ${IMAGE}:${WANTED} (also tagged :latest)"

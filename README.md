@@ -23,6 +23,7 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
       - [Option A: Validated Pattern (automated, GitOps)](#option-a-validated-pattern-automated-gitops)
       - [Option B: Quickstart (manual, step-by-step)](#option-b-quickstart-manual-step-by-step)
       - [Supported inference providers](#supported-inference-providers)
+      - [Custom inference provider](#custom-inference-provider)
     - [Validating the deployment](#validating-the-deployment)
     - [Delete](#delete)
   - [Repository structure](#repository-structure)
@@ -45,6 +46,8 @@ Organizations adopting AI coding and knowledge agents need strong isolation guar
 This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Secrets for inference providers flow through HashiCorp Vault and the External Secrets Operator, keeping API keys out of Git and helm values.
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
+
+For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom inference provider](#custom-inference-provider).
 
 ### Architecture diagrams
 
@@ -172,12 +175,13 @@ cd secure-agent-workspace
 # 2. Log in to OpenShift with cluster-admin
 oc login --server=https://api.<cluster>:6443 -u <user>
 
-# 3. Generate SSH keys for sandbox provisioning
+# 3. Generate SSH keys (used for on-demand SSH into the gateway VM)
 make generate-keys
 
 # 4. Configure secrets
 cp values-secret.yaml.template ~/values-secret.yaml
-# Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
+# The default profile needs an NVIDIA key and a Brave Search key:
+#   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
@@ -186,23 +190,32 @@ make copy-images
 
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on the remote (origin).
-# If deploying from a local-only branch, set TARGET_REVISION first:
-#   export TARGET_REVISION=main
+# pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
+#   export TARGET_BRANCH=main TARGET_ORIGIN=origin
 ./pattern.sh make install
 
 # 7. Authenticate and configure the CLI
 make login                    # Opens browser → login with alice / alice
-export OPENSHELL_SAW_NAME=openshell-saw
+export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
 # 8. Verify
+# The first command lists the default workspace; the second lists cuda-dev.
 openshell sandbox list
+openshell sandbox list --workspace cuda-dev
 ```
+
+Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD creates or removes `saw-<name>`.
+Each user's virtual machine is named after them, in namespace `saw-<name>` (Alice's machine is `alice` in `saw-alice`, not `openshell-saw`), the same layout as `make openshell-saw-create OPENSHELL_SAW_NAME=alice`.
+Set `OPENSHELL_SAW_NAME` to the user name; `SAW_NS` defaults to `saw-<name>`.
+Removing an entry deletes that user's Argo apps and leaves the VM running.
+To delete the namespace and the VM as well, first set `pruneOnRemove: true` on that user's entry and push, then remove the entry and push.
+Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from the single-user layout](docs/deployment-guide.md#upgrading-from-the-single-user-layout).
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `openshell-agents` namespace.
+Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `saw-keycloak` namespace (set `KEYCLOAK_NS` to use another one, e.g. `KEYCLOAK_NS=keycloak` for a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
 
 ```bash
 # 1. Clone the repository
@@ -221,12 +234,13 @@ make generate-keys
 # 5. Copy pre-built images to the cluster
 make copy-images
 
-# 6. Deploy Keycloak
+# 6. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
+#    you are asked before the OpenShell realm is imported into it)
 make keycloak
 
-# 7. Verify Keycloak
+# 7. Verify Keycloak (realm, openshell-cli client, roles)
+make keycloak-check
 make keycloak-issuer
-curl -sk "$(make keycloak-issuer)/.well-known/openid-configuration" | python3 -m json.tool | head -5
 
 # 8. Deploy governance interceptor
 helm upgrade --install governance-policy charts/governance-policy \
@@ -238,52 +252,48 @@ helm upgrade --install governance-interceptor charts/governance-interceptor \
 make login                    # Opens browser → login with alice / alice
 make whoami                   # Verify identity
 
-# 10. Create a sandbox
-export OPENSHELL_SAW_NAME=alice-openshell-saw
+# 10. Create a sandbox (deploys into namespace saw-alice)
+export OPENSHELL_SAW_NAME=alice
 make openshell-saw-create \
-  PROVIDER=gemini \
-  MODEL=gemini-2.5-flash \
+  PROVIDER=build \
+  MODEL=nvidia/nemotron-3-super-120b-a12b \
   API_KEY=<your-api-key>
 
-# 11. Follow setup logs (in another terminal)
+# 11. Follow the in-VM installer (in another terminal)
 make openshell-saw-logs
 
 # 12. Check status
 make openshell-saw-list
 make status
 
-# 13. Wait for VM to be ready
-oc get vmi -n openshell-agents
-# Wait for PHASE=Running, READY=True
+# 13. Wait for the installer to finish
+make openshell-saw-status
+# Wait for "install" and "apply" to show "phase": "Done"
 
 # 14. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Authenticate CLI with the gateway
-openshell gateway add https://$(oc get route openshell-saw-gateway -n openshell-agents -o jsonpath='{.spec.host}') --name saw
+# 15. Authenticate CLI with the gateway
+openshell gateway login $OPENSHELL_SAW_NAME
 # Log in as alice / alice in the browser
 
-# 15. Verify sandboxes
+# 16. Verify sandboxes
 # sandbox list without --workspace only shows workspace "default"
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 
-# 16. Launch TUI (pick one)
-OPENSHELL_SAW_NAME=openshell-saw \
+# 17. Launch TUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 make nemoclaw-tui # NemoClaw
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 make openclaw-tui # OpenClaw
 
-# 17. Launch GUI (pick one)
-OPENSHELL_SAW_NAME=openshell-saw \
+# 18. Launch GUI (pick one)
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
 make nemoclaw-gui # NemoClaw
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 GUI_PORT=18790 \
 make openclaw-gui # OpenClaw
@@ -291,7 +301,7 @@ make openclaw-gui # OpenClaw
 
 > **Token expiry:** The OIDC access token lasts 10 hours. If it expires, run `make login` to re-authenticate, then `make openshell-saw-configure-gateway` to copy the fresh token. Alternatively, run `openshell gateway login` directly to re-authenticate with the gateway.
 
-You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically.
+You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `alice` in `saw-alice`).
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 
@@ -305,7 +315,37 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 | NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
-| Custom endpoint | `custom` | any (set `ENDPOINT_URL`) |
+| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+
+#### Custom inference provider
+
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The installer creates an `openai` provider with the endpoint's base URL and onboards OpenClaw against that URL. OpenShell 0.1.x has no inference routing: the agent sends a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider profile names, so the profile must name your endpoint's host (see [docs/custom-inference.md](docs/custom-inference.md)).
+
+Select the `custom-inference` SAW-BOM profile and give the endpoint's URL, model and key.
+
+**Option A (Validated Pattern)** — in `~/values-secret-secure-agent-workspace.yaml`, use the commented custom example of the `inference` secret (`provider: openai`, `model`, `url`, `api_key`), and select the profile in `charts/saw-bom/values.yaml` (committed to the branch the pattern deploys):
+
+```yaml
+profiles:
+  - custom-inference
+```
+
+**Option B (Quickstart)** — one command:
+
+```bash
+make openshell-saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
+  PROVIDER=openai MODEL=<served model> \
+  ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
+  API_KEY=<key>          # any non-empty value if the server needs no key
+```
+
+Notes:
+
+- The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
+- With governance on, the `openai` provider type must be in the governance catalog (`charts/governance-policy/profiles/openai.yaml`, shipped with the chart).
+- Self-hosted models can be slow; the profile sets a 300-second inference timeout.
+
+Details: [docs/custom-inference.md](docs/custom-inference.md).
 
 ### Validating the deployment
 
@@ -315,21 +355,17 @@ openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 
 # NemoClaw sandbox (TUI and GUI) — workspace cuda-dev
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 make nemoclaw-tui
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=cuda-sandbox \
 WORKSPACE=cuda-dev \
 GUI_PORT=18789 \
 make nemoclaw-gui
 
 # OpenClaw sandbox (TUI and GUI) — workspace default
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 make openclaw-tui
-OPENSHELL_SAW_NAME=openshell-saw \
 SANDBOX_NAME=notebook \
 GUI_PORT=18790 \
 make openclaw-gui
@@ -339,10 +375,16 @@ make openshell-saw-tui
 make openshell-saw-gui
 
 # Or access the dashboard directly via the route
-oc get route ${OPENSHELL_SAW_NAME}-dashboard -n openshell-agents -o jsonpath='https://{.spec.host}'
+oc get route ${OPENSHELL_SAW_NAME}-dashboard -n ${SAW_NS:-saw-$OPENSHELL_SAW_NAME} -o jsonpath='https://{.spec.host}'
 
-# Run the automated E2E test (headless, creates its own sandbox)
-make test
+# Installer status, and a shell on the gateway VM for debugging
+# (adds your SSH key to the VM on demand)
+make openshell-saw-status
+make openshell-saw-vm-ssh
+
+# Installer and chart tests (no cluster needed; needs helm and
+# python3 -m pip install -r tests/requirements.txt)
+make test-installer
 
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
@@ -375,11 +417,12 @@ make delete-all
 ├── values-prod.yaml                  # ClusterGroup (operators, subscriptions, applications)
 ├── values-secret.yaml.template       # Secrets template (inference keys, SSH keys)
 ├── overrides/
-│   └── openshell-saw.yaml        # Default sandbox values for VP flow
+│   └── saw-users.yaml                # One list entry per user
 ├── charts/                           # ArgoCD-managed Helm charts
 │   ├── openshell-keycloak/           # Keycloak CR + KeycloakRealmImport (RHBK operator)
 │   ├── openshell-saw/            # Per-user sandbox VM + gateway + agent
-│   └── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
+│   ├── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
+│   └── saw-users/                    # Turns the user list into namespaces and Argo apps
 ├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
 │   └── helm/
 │       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig
@@ -432,12 +475,15 @@ The system implements layered isolation:
 | `alice` | `alice` | `openshell-user`, `openshell-admin` |
 | `bob` | `bob` | `openshell-user`, `openshell-admin` |
 
-### Namespace modes
+### Namespaces
 
-| Mode | Description |
+| Namespace | Contents |
 |---|---|
-| `shared` (default) | All sandboxes in one namespace. Scales to thousands of users. |
-| `perUser` | Each user gets `saw-<username>` namespace. Kubernetes-level resource isolation. |
+| `saw-<name>` (one per sandbox) | The gateway VM, its installer inputs and provider Secrets |
+| `openshell-agents` | Golden VM image, image builds, governance interceptor |
+| `keycloak` | Keycloak (RHBK) |
+
+The gateway VM installs itself from a versioned Bill of Materials on every boot; see [docs/versioned-bom-installer.md](docs/versioned-bom-installer.md).
 
 ### OIDC issuer resolution
 

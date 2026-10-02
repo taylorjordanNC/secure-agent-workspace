@@ -1,3 +1,4 @@
+id: gemini
 display_name: Google Gemini
 description: Google Gemini AI and Vertex AI API access
 category: other
@@ -50,3 +51,5 @@ binaries:
   - /usr/bin/gemini
   - /usr/lib/node_modules/@google/gemini-cli/dist/index.js
   - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

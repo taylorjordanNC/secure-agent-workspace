@@ -9,10 +9,15 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - openshift-cnv
+    # Shared: golden image, image builds, governance interceptor.
     openshell-agents:
+    # Keycloak and its RHBK operator, in a namespace of their own so they
+    # never collide with a platform Keycloak (often in `keycloak`). Any
+    # namespace works; see openshell-saw oidc.keycloakNamespace.
+    saw-keycloak:
       operatorGroup: true
       targetNamespaces:
-        - openshell-agents
+        - saw-keycloak
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -34,7 +39,7 @@ clusterGroup:
       channel: stable
     rhbk:
       name: rhbk-operator
-      namespace: openshell-agents
+      namespace: saw-keycloak
       channel: stable-v26
     rhdh:
       name: rhdh
@@ -65,12 +70,25 @@ clusterGroup:
       path: charts/openshift-cnv
     openshell-keycloak:
       name: openshell-keycloak
-      namespace: openshell-agents
+      namespace: saw-keycloak
       path: charts/openshell-keycloak
-    pattern-secrets:
-      name: pattern-secrets
+    # One namespace and three apps (secrets, bill of materials, VM) per user,
+    # from overrides/saw-users.yaml. The chart release is tracked here; the
+    # Application objects it creates live in the Argo CD namespace.
+    # prune drops a user's Applications when their list entry is removed.
+    # pruneOnRemove in the chart decides whether the VM and namespace go too.
+    saw-users:
+      name: saw-users
       namespace: openshell-agents
-      path: charts/pattern-secrets
+      path: charts/saw-users
+      extraValueFiles:
+        - /overrides/saw-users.yaml
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20
     governance-policy:
       name: governance-policy
       namespace: openshell-agents
@@ -79,13 +97,3 @@ clusterGroup:
       name: governance-interceptor
       namespace: openshell-agents
       path: charts/governance-interceptor
-    saw-bom:
-      name: saw-bom
-      namespace: openshell-agents
-      path: charts/saw-bom
-    openshell-saw:
-      name: openshell-saw
-      namespace: openshell-agents
-      path: charts/openshell-saw
-      extraValueFiles:
-        - /overrides/openshell-saw.yaml
