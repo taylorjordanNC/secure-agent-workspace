@@ -344,19 +344,19 @@ def test_post_adoption_workspace_is_pruned_from_equals_labels(
 
 
 def test_failed_provider_delete_stays_in_the_ledger(
-        ab, fake_env, config, profiles, creds, tmp_path, capsys):
+        ab, fake_env, config, brave_profiles, brave_creds, tmp_path, capsys):
     """A provider still attached to a sandbox (here, one the ledger does not
     track) makes the CLI fail. The installer must not log success or drop
     the ledger entry; status.json copies lastPrune, so the provider is not
     recorded as pruned either."""
     ledger = tmp_path / "managed.json"
     cfg = _on(config, ledger)
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), cfg, brave_creds).apply(brave_profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["brave"], "phase": "Ready"}
     fake_env.set_openshell_state(state)
-    _drop_provider(profiles, "default", "brave")
-    ab.ProfileApplier(ab.Shell(), cfg, creds).apply(profiles)
+    _drop_provider(brave_profiles, "default", "brave")
+    ab.ProfileApplier(ab.Shell(), cfg, brave_creds).apply(brave_profiles)
     out = capsys.readouterr().out
     assert "default/brave" in fake_env.openshell_state()["providers"]
     assert "default/hand" in fake_env.openshell_state()["sandboxes"]
