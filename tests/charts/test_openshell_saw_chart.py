@@ -469,7 +469,10 @@ def test_rendered_inputs_validate_in_the_shipped_installer(tmp_path, default_doc
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
     assert "2 workspace(s) ['cuda-dev', 'default']" in result.stdout
-    assert "3 credential(s)" in result.stdout
+    # The shipped default profile disables the brave web-search provider by
+    # default (workshop default: shared NGC key, no web-search egress), so the
+    # resolver skips it: nvidia (default) + nvidia (cuda-dev) = 2.
+    assert "2 credential(s)" in result.stdout
 
 
 # -- per-SAW namespaces ----------------------------------------------------------

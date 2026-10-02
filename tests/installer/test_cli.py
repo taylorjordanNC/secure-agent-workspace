@@ -57,7 +57,8 @@ def test_validate_accepts_the_shipped_inputs(world):
     result = world.run("validate")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
-    assert "2 workspace(s)" in result.stdout and "3 credential(s)" in result.stdout
+    # brave ships disabled (workshop default), so 2 credentials resolve.
+    assert "2 workspace(s)" in result.stdout and "2 credential(s)" in result.stdout
     assert world.fake.podman_calls() == [] and world.fake.openshell_calls() == []
 
 
@@ -140,12 +141,14 @@ def test_failed_install_is_visible_and_clears_ready(world):
 
 
 def test_missing_credential_blocks_apply_but_not_install(world):
-    for f in (world.inputs / "secrets" / "web-search").iterdir():
+    # brave ships disabled (workshop default); remove the inference secret
+    # that the enabled nvidia provider reads.
+    for f in (world.inputs / "secrets" / "inference").iterdir():
         f.unlink()
     assert world.run("install").returncode == 0      # software install does not read profiles
     result = world.run("apply")
     assert result.returncode == 1
-    assert "Secret 'web-search' key 'api_key'" in result.stdout
+    assert "Secret 'inference' key 'api_key'" in result.stdout
     assert world.status()["apply"]["phase"] == "Failed"
     assert world.fake.openshell_calls() == []        # nothing half-applied
     assert world.run("validate").returncode == 1
@@ -279,8 +282,6 @@ def test_credentials_never_appear_in_argv(world):
     assert world.run("apply").returncode == 0
     argv = json.dumps(world.fake.openshell_calls())
     assert "nvapi-TEST-KEY-123" not in argv and "brave-TEST-KEY-456" not in argv
-    assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
-        "BRAVE_API_KEY=brave-TEST-KEY-456"
 
 
 def test_owed_gateway_restart_survives_a_failed_attempt(ab, world, monkeypatch):

@@ -39,10 +39,10 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     assert all("oidc" not in " ".join(c).lower() for c in fake_env.openshell_calls())
 
     assert state["workspaces"] == ["default", "cuda-dev"]
-    assert set(state["providers"]) == {"default/nvidia", "default/brave", "cuda-dev/nvidia"}
+    # brave ships disabled (workshop default), so only nvidia is created.
+    assert set(state["providers"]) == {"default/nvidia", "cuda-dev/nvidia"}
     assert state["providers"]["default/nvidia"] == {
         "type": "nvidia", "credential": "NVIDIA_API_KEY=nvapi-TEST-KEY-123"}
-    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
 
     # OpenShell 0.1.x has no inference routes: nothing calls `openshell inference`.
     assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
@@ -165,12 +165,12 @@ def test_verify_reports_missing_resources(ab, fake_env, config, profiles, creds)
     applier = make_applier(ab, config, creds)
     applier.apply(profiles)
     state = fake_env.openshell_state()
-    del state["providers"]["default/brave"]
+    del state["providers"]["default/nvidia"]
     state["sandboxes"]["default/notebook"]["providers"] = []
     state["workspaces"].remove("cuda-dev")
     fake_env.set_openshell_state(state)
     failures = applier.verify(profiles)
-    assert "provider 'brave' in 'default' is missing" in failures
+    assert "provider 'nvidia' in 'default' is missing" in failures
     assert "sandbox 'notebook' is missing provider 'nvidia'" in failures
     assert "workspace 'cuda-dev' is missing" in failures
 
@@ -197,28 +197,46 @@ def default_ws(ab, profiles):
     return next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
 
 
-def test_provider_without_gateway_profile_is_skipped_not_fatal(ab, fake_env, config, profiles, creds):
+def enable_brave(ab, profiles):
+    """The shipped workshop profile disables the brave web-search provider
+    (shared NGC key, no web-search egress); tests that exercise its paths
+    enable it explicitly."""
+    next(p for p in default_ws(ab, profiles).providers if p.name == "brave").enabled = True
+
+
+@pytest.fixture
+def brave_profiles(ab, profiles):
+    enable_brave(ab, profiles)
+    return profiles
+
+
+@pytest.fixture
+def brave_creds(ab, brave_profiles, secrets_dir):
+    return ab.resolve_credentials(brave_profiles, secrets_dir)
+
+
+def test_provider_without_gateway_profile_is_skipped_not_fatal(ab, fake_env, config, brave_profiles, brave_creds):
     """Live: with governance off, OpenShell 0.0.116 has no 'brave' profile and
     `provider create --type brave` failed the whole apply."""
     fake_env.without_profiles("brave")
-    applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
+    applier = make_applier(ab, config, brave_creds)
+    applier.apply(brave_profiles)
     state = fake_env.openshell_state()
     assert "default/brave" not in state["providers"]
     assert {"default/nvidia", "cuda-dev/nvidia"} <= set(state["providers"])
     assert set(state["sandboxes"]) == {"default/notebook", "cuda-dev/cuda-sandbox"}
     assert applier.skipped == {("default", "brave")}
-    assert applier.verify(profiles) == []
+    assert applier.verify(brave_profiles) == []
 
 
-def test_sandbox_is_created_without_a_skipped_provider(ab, fake_env, config, profiles, creds):
+def test_sandbox_is_created_without_a_skipped_provider(ab, fake_env, config, brave_profiles, brave_creds):
     fake_env.without_profiles("brave")
-    notebook = next(sb for sb in default_ws(ab, profiles).sandboxes if sb.name == "notebook")
+    notebook = next(sb for sb in default_ws(ab, brave_profiles).sandboxes if sb.name == "notebook")
     notebook.providers = ["nvidia", "brave"]
-    applier = make_applier(ab, config, creds)
-    applier.apply(profiles)
+    applier = make_applier(ab, config, brave_creds)
+    applier.apply(brave_profiles)
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == ["nvidia"]
-    assert applier.verify(profiles) == []
+    assert applier.verify(brave_profiles) == []
 
 
 def test_other_provider_errors_still_fail(ab, fake_env, config, profiles, creds):
@@ -237,42 +255,42 @@ def applier_with_shipped_profiles(ab, config, creds):
     return ab.ProfileApplier(ab.Shell(), config, creds, docs)
 
 
-def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fake_env, config, profiles, creds):
+def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fake_env, config, brave_profiles, brave_creds):
     """Governance off: the gateway has no 'brave' profile. The installer imports
     the shipped copy (same file as governance-policy/profiles/brave.yaml) into
     the workspace and creates the provider."""
     fake_env.without_profiles("brave")
-    applier = applier_with_shipped_profiles(ab, config, creds)
-    applier.apply(profiles)
+    applier = applier_with_shipped_profiles(ab, config, brave_creds)
+    applier.apply(brave_profiles)
     state = fake_env.openshell_state()
     assert state["imported_profiles"] == {"default": ["brave"]}
     assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
     assert applier.skipped == set()
-    assert applier.verify(profiles) == []
+    assert applier.verify(brave_profiles) == []
     imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
     assert len(imports) == 1 and "--workspace" not in imports[0]      # default workspace
 
 
-def test_profile_is_imported_once_across_applies(ab, fake_env, config, profiles, creds):
+def test_profile_is_imported_once_across_applies(ab, fake_env, config, brave_profiles, brave_creds):
     fake_env.without_profiles("brave")
-    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
-    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    applier_with_shipped_profiles(ab, config, brave_creds).apply(brave_profiles)
+    applier_with_shipped_profiles(ab, config, brave_creds).apply(brave_profiles)
     imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
     assert len(imports) == 1
 
 
-def test_no_import_when_the_gateway_has_the_profile(ab, fake_env, config, profiles, creds):
+def test_no_import_when_the_gateway_has_the_profile(ab, fake_env, config, brave_profiles, brave_creds):
     """Governance on: the interceptor serves 'brave'; nothing is imported."""
-    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    applier_with_shipped_profiles(ab, config, brave_creds).apply(brave_profiles)
     assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "profile"]]
     assert "default/brave" in fake_env.openshell_state()["providers"]
 
 
-def test_failed_profile_import_stops_the_apply(ab, fake_env, config, profiles, creds):
+def test_failed_profile_import_stops_the_apply(ab, fake_env, config, brave_profiles, brave_creds):
     fake_env.without_profiles("brave")
-    applier = ab.ProfileApplier(ab.Shell(), config, creds, {"brave": "display_name: no id\n"})
+    applier = ab.ProfileApplier(ab.Shell(), config, brave_creds, {"brave": "display_name: no id\n"})
     with pytest.raises(ab.InstallerError, match="could not import the 'brave' provider profile"):
-        applier.apply(profiles)
+        applier.apply(brave_profiles)
 
 
 def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):

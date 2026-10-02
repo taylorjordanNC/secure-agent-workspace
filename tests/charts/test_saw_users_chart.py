@@ -268,7 +268,8 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
     assert "2 workspace(s) ['cuda-dev', 'default']" in result.stdout
-    assert "3 credential(s)" in result.stdout
+    # brave ships disabled (workshop default), so 2 credentials resolve.
+    assert "2 credential(s)" in result.stdout
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""

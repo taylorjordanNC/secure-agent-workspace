@@ -12,7 +12,8 @@ spec:
         - nvidia
     - name: toolbox
       type: generic
-      enabled: true
+      # Disabled: collides with default/toolbox (same unit-name scheme).
+      enabled: false
       image: base
       providers:
         - nvidia

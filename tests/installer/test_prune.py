@@ -24,6 +24,20 @@ def creds(ab, profiles, secrets_dir):
     return ab.resolve_credentials(profiles, secrets_dir)
 
 
+@pytest.fixture
+def brave_profiles(ab, profiles):
+    """The shipped workshop profile disables the brave web-search provider;
+    tests exercising its paths re-enable it."""
+    next(p for ws in (w for _, w in ab.enabled_workspaces(profiles))
+         for p in ws.providers if p.name == "brave").enabled = True
+    return profiles
+
+
+@pytest.fixture
+def brave_creds(ab, brave_profiles, secrets_dir):
+    return ab.resolve_credentials(brave_profiles, secrets_dir)
+
+
 def test_first_apply_adopts_and_deletes_nothing(ab, fake_env, config, profiles, creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     cfg = {**config, "prune": {"mode": "on", "sandboxes": True, "ledgerPath": str(ledger)}}
@@ -119,18 +133,18 @@ def _drop_provider(profiles, workspace, name):
                 ws.providers = [p for p in ws.providers if p.name != name]
 
 
-def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, profiles, creds, tmp_path, capsys):
+def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, brave_profiles, brave_creds, tmp_path, capsys):
     ledger = tmp_path / "managed.json"
     report = {**config, "prune": {"mode": "report", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
-    _drop_provider(profiles, "default", "brave")
+    ab.ProfileApplier(ab.Shell(), report, brave_creds).apply(brave_profiles)
+    _drop_provider(brave_profiles, "default", "brave")
     before = [c for c in fake_env.openshell_calls() if "delete" in c]
-    ab.ProfileApplier(ab.Shell(), report, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), report, brave_creds).apply(brave_profiles)
     assert "default/brave" in fake_env.openshell_state()["providers"]
     assert [c for c in fake_env.openshell_calls() if "delete" in c] == before
     assert "would delete provider default/brave" in capsys.readouterr().out
     on = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
-    ab.ProfileApplier(ab.Shell(), on, creds).apply(profiles)
+    ab.ProfileApplier(ab.Shell(), on, brave_creds).apply(brave_profiles)
     assert "default/brave" not in fake_env.openshell_state()["providers"]
 
 

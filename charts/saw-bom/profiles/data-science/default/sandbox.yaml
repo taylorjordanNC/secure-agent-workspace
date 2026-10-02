@@ -11,14 +11,18 @@ spec:
         - nvidia
     - name: cuda-sandbox
       type: nemoclaw
-      enabled: true
+      # Disabled: the new installer's keepalive unit is named
+      # openshell-sandbox-<name>.service (no workspace scope), which would
+      # collide with cuda-dev's enabled cuda-sandbox.
+      enabled: false
       agent: openclaw
       image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
       providers:
         - nvidia
     - name: toolbox
       type: generic
-      enabled: true
+      # Disabled: collides with cuda-dev/toolbox (same unit-name scheme).
+      enabled: false
       image: base
       providers:
         - nvidia
