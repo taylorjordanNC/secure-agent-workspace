@@ -83,7 +83,7 @@ in [Versioned BOM installer](versioned-bom-installer.md).
 │  │     │                                        │                 │  │
 │  │     │  ┌─────────────────────────────────┐   │                 │  │
 │  │     │  │  notebook (openclaw)             │  │                 │  │
-│  │     │  │  Image: openclaw-openshell:latest│  │                 │  │
+│  │     │  │  Image: aipcc openclaw:2026.9.6  │  │                 │  │
 │  │     │  │  Workspace: default              │  │                 │  │
 │  │     │  │  Provider: nvidia                │  │                 │  │
 │  │     │  │  OpenClaw Gateway (:18789)       │  │                 │  │
@@ -103,11 +103,13 @@ in [Versioned BOM installer](versioned-bom-installer.md).
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │  Routes (OpenShift)                                            │  │
 │  │  ├── openshell-saw-gateway  → VM:17670  (OpenShell API)        │  │
-│  │  ├── openshell-saw-dashboard → VM:8090  (Dashboard UI)         │  │
+│  │  ├── openshell-saw-dashboard → VM:18789 (OpenClaw UI)          │  │
 │  │  └── openshell-saw-webui    → VM:8080  (OAuth2 Proxy)          │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+The `openshell-saw-dashboard` Route maps to VM port 18789, the OpenClaw UI, which is not reachable on OpenShell 0.1.x (see [OpenClaw UI and the dashboard Route](deployment-guide.md#openclaw-ui-and-the-dashboard-route)). The `openshell-saw-webui` Route maps to VM port 8080, the oauth2-proxy in front of the OpenShell Dashboard.
 
 ## BOM Profile Structure
 
@@ -129,7 +131,7 @@ charts/saw-bom/profiles/
 | Type | Image | Use Case | Gateway | Entrypoint |
 |------|-------|----------|---------|------------|
 | nemoclaw | nemoclaw-sandbox:latest | NemoClaw-managed agent with inference | OpenClaw via sandbox exec | NemoClaw supervisor |
-| openclaw | openclaw-openshell:latest | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
+| openclaw | quay.io/aipcc/base-images/agentic/openclaw:2026.9.6 | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
 | generic | base | Plain sandbox for tools/scripts | None | OpenShell supervisor |
 
 ## Inference (OpenShell 0.1.x: no inference routes)
@@ -173,7 +175,7 @@ User → OpenClaw TUI/GUI
 │ └── No credentials inside sandbox containers    │
 ├─────────────────────────────────────────────────┤
 │ Identity Boundary                               │
-│ ├── OIDC via Keycloak (alice/alice)             │
+│ ├── OIDC via Keycloak (alice)                   │
 │ ├── mTLS for internal gateway communication     │
 │ ├── Gateway token for OpenClaw Control UI       │
 │ └── Sandbox user (UID 65532) — non-root         │

@@ -29,7 +29,10 @@ OIDC login and never configures the CLI for OAuth.
 """
 
 import argparse
+import base64
 import hashlib
+import io
+import ipaddress
 import json
 import os
 import re
@@ -39,8 +42,10 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -184,9 +189,14 @@ class Shell:
         return text
 
     def run(self, cmd, env=None, check=True, ok_if_exists=False,
-            timeout=300, input_text=None, quiet=False):
+            timeout=300, input_text=None, quiet=False, force=False):
         display = self.mask(" ".join(str(c) for c in cmd))
-        if self.dry_run:
+        # force=True: still run this during --dry-run (catalog reads, and the
+        # harness image pull/export needed to check it) so governance cannot
+        # pass dry-run and fail apply. The image pull is the one exception to
+        # "read-only": pulling by digest is deterministic and safe to repeat,
+        # but it does write to the local image store.
+        if self.dry_run and not force:
             log(f"[dry-run] {display}")
             return Result(0)
         if not quiet:
@@ -341,6 +351,8 @@ CONFIG_DEFAULTS = {
     "mtlsGateway": "saw-installer",
     "ownerSubject": "",
     "sandboxDashboardRoute": "",
+    "sandboxUi": [],
+    "sandboxUiProxy": {},
     "dashboard": {"enabled": False},
     "signing": {"mode": "off"},
     "prune": {"mode": "off", "sandboxes": False},
@@ -405,7 +417,83 @@ def load_config(path):
         for key in ("image", "proxyImage", "clientId"):
             if not dash.get(key):
                 raise InstallerError(f"installer config: dashboard.{key} is required when the dashboard is enabled")
+    merged["sandboxUi"], merged["sandboxUiProxy"] = check_sandbox_ui(
+        merged.get("sandboxUi"), merged.get("sandboxUiProxy"))
     return merged
+
+
+HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_@-]*$")
+USER_RE = re.compile(r"^[A-Za-z0-9._@+-]{1,255}$")
+
+
+def check_sandbox_ui(entries, proxy):
+    """sandboxUi and sandboxUiProxy go into unit files and command lines,
+    so everything is checked against a strict pattern."""
+    if not isinstance(entries or [], list) or not isinstance(proxy or {}, dict):
+        raise InstallerError("installer config: sandboxUi must be a list, sandboxUiProxy an object")
+    proxy = dict(proxy or {})
+    ports, out = set(), []
+    for e in entries or []:
+        what = f"installer config: sandboxUi entry {e!r}"
+        if not isinstance(e, dict) or not all(NAME_RE.match(str(e.get(k, ""))) for k in ("workspace", "sandbox")):
+            raise InstallerError(f"{what}: workspace and sandbox must be DNS labels")
+        if not HOST_RE.match(str(e.get("host", ""))):
+            raise InstallerError(f"{what}: needs a route host (set global.clusterDomain)")
+        for key in ("proxyPort", "forwardPort"):
+            if not isinstance(e.get(key), int) or not 1024 <= e[key] <= 65535 or e[key] in ports:
+                raise InstallerError(f"{what}: {key} must be a free port from 1024 to 65535")
+            ports.add(e[key])
+        internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
+        if internal > 65535 or internal in ports:
+            raise InstallerError(f"{what}: forwardPort + {FORWARD_INTERNAL_OFFSET} must be a free port "
+                                 "(the relay in front of the forward uses forwardPort)")
+        ports.add(internal)
+        out.append({k: e[k] for k in ("workspace", "sandbox", "host", "proxyPort", "forwardPort")})
+    if out:
+        users = proxy.get("allowedUsers") or []
+        if not users or not all(isinstance(u, str) and USER_RE.match(u) for u in users):
+            raise InstallerError("installer config: sandboxUiProxy.allowedUsers must name the owner "
+                                 "(accessControl.owner) and be plain user names")
+        if not IMAGE_RE.match(str(proxy.get("image", ""))) or not NAME_RE.match(str(proxy.get("clientId", ""))):
+            raise InstallerError("installer config: sandboxUiProxy needs a valid image and clientId")
+        target = proxy.get("targetPort", 18789)
+        if not isinstance(target, int) or not 1 <= target <= 65535:
+            raise InstallerError("installer config: sandboxUiProxy.targetPort must be a port")
+    proxy["trustedProxy"] = check_trusted_proxy(proxy.get("trustedProxy"))
+    return out, proxy
+
+
+def check_trusted_proxy(tp):
+    """sandboxUiProxy.trustedProxy: OpenClaw trusts the oauth2-proxy's
+    X-Forwarded-User instead of asking for its gateway token. Off when absent
+    (configs from before this setting)."""
+    if tp is None:
+        return {"enabled": False}
+    if not isinstance(tp, dict) or not isinstance(tp.get("enabled", False), bool) \
+            or not isinstance(tp.get("deviceAutoApprove", True), bool):
+        raise InstallerError("installer config: sandboxUiProxy.trustedProxy must be "
+                             "{enabled: bool, cidrs: [...], deviceAutoApprove: bool}")
+    cidrs = tp.get("cidrs", TRUSTED_PROXY_CIDRS)
+    if not isinstance(cidrs, list) or not cidrs:
+        raise InstallerError("installer config: sandboxUiProxy.trustedProxy.cidrs must be a list of CIDRs")
+    for c in cidrs:
+        try:
+            ipaddress.ip_network(str(c), strict=False)
+        except ValueError:
+            raise InstallerError(f"installer config: sandboxUiProxy.trustedProxy.cidrs: {c!r} is not a CIDR")
+    return {"enabled": tp.get("enabled", False), "cidrs": [str(c) for c in cidrs],
+            "deviceAutoApprove": tp.get("deviceAutoApprove", True)}
+
+
+# Where the proxied requests reach the sandbox's gateway from: `openshell
+# forward service` connects to the port inside the sandbox, over loopback.
+TRUSTED_PROXY_CIDRS = ["127.0.0.1/32", "::1/128"]
+# What a signed-in owner's Control UI device gets without manual pairing.
+# The header OpenClaw reads the user from: oauth2-proxy's X-Forwarded-Email
+# carries the preferred_username it admitted (see openclaw_gateway_script).
+TRUSTED_PROXY_USER_HEADER = "x-forwarded-email"
+TRUSTED_PROXY_SCOPES = ["operator.read", "operator.write", "operator.approvals", "operator.questions"]
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +525,7 @@ class Sandbox:
     image: str = ""
     providers: list = field(default_factory=list)
     model: str = ""
+    harness_ref: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -454,20 +543,495 @@ class Profile:
     workspaces: list = field(default_factory=list)
 
 
+@dataclass
+class HarnessBundle:
+    name: str
+    agent: str = "openclaw"
+    digest: str = ""
+    files: dict = field(default_factory=dict)   # relpath -> base64 text
+
+
+def tree_digest(files):
+    """Shared contract: sha256 over sorted "<relpath>\\0<sha256_hex>\\n" lines.
+
+    `files` maps a POSIX relative path to file bytes. Helm computes the same
+    value at render time; templates/configmap-bom.yaml must agree.
+    """
+    digest = hashlib.sha256()
+    for rel in sorted(files):
+        digest.update(f"{rel}\x00{hashlib.sha256(files[rel]).hexdigest()}\n".encode())
+    return "sha256:" + digest.hexdigest()
+
+
+# -- Harness bundles ---------------------------------------------------------
+#
+# A harness bundle is the tree OpenClaw loads (plugin.json, skills/, mcp.json,
+# plugins/). It reaches the sandbox only by being mounted read-only at
+# HARNESS_MOUNT; the files are mounted exactly as written, never converted.
+#
+#   harnessRef.image  an OCI image pinned by digest (harness-bundles/, built
+#                     and pushed by CI). The installer pulls it by digest and
+#                     unpacks its tree, unchanged, into the sandbox's volume.
+#   harnessRef.name   an inline bundle packed into the saw-bom ConfigMap,
+#                     copied unchanged into the sandbox's volume.
+#
+# Both sources end up in one podman named volume per sandbox, mounted with
+# --driver-config-json. OpenShell 0.1.x does not allow an image mount while
+# resource admission is on (the default: "host bind or image mount cannot be
+# attached while resource admission is enabled"), and it only admits a volume
+# that carries the openshell.ai/sandbox-attachable labels for the sandbox's
+# workspace (openshell-core resource_admission.rs, driver-podman driver.rs).
+# The gateway also needs allow_driver_config = true in [openshell.drivers.podman]
+# (the openshell-saw chart sets it). A changed bundle refills the volume in
+# place: the volume is never recreated under a running sandbox, because the
+# podman driver records each attached volume's identity and stops a sandbox
+# whose volume changed.
+#
+# Flow, per sandbox with a harnessRef (ProfileApplier, as the runtime user):
+#   1. prepare_harness        read the bundle (the volume when it already holds
+#                             this source intact; else image: pull + export,
+#                             inline: the ConfigMap files)
+#   2. check_harness_governance
+#                             every governanceProfile must be served by the
+#                             gateway in the sandbox's workspace, the sandbox
+#                             must have a provider of that type (its endpoints
+#                             and key reach the sandbox only through one), and
+#                             a remote MCP server's host must be one of the
+#                             profile's endpoints; nothing is filled before
+#                             this passes
+#   3. HarnessVolume          create the labelled volume, fill it if needed
+#   4. create_sandbox         --driver-config-json mounts the volume; a running
+#                             sandbox that mounts anything else at
+#                             HARNESS_MOUNT (or mounts a harness it no longer
+#                             has) is recreated
+#   5. configure_harness      point OpenClaw at HARNESS_MOUNT
+#   6. verify_harness         the volume holds the source intact, the container
+#                             mounts it, and the sandbox reads it
+#   7. cleanup_harness_volumes
+#                             remove harness volumes no sandbox wants
+#
+# Checked live on OpenShell 0.0.116 (podman 5.8) and OpenClaw 2026.9.5: volume
+# mounts through --driver-config-json, read-only in the sandbox; skills,
+# native plugins and an Agent Plugins bundle's MCP servers loaded from the
+# mount; how podman reports the mount (see sandbox_harness_mount). The 0.1.x
+# admission rules above are from the v0.1.2 source.
+
+HARNESS_MOUNT = "/sandbox/harness"
+HARNESS_MARKER = ".saw-harness-revision"  # written into the volume with the bundle
+HARNESS_VOLUME_PREFIX = "saw-harness-"
+HARNESS_VOLUME_LABEL = "saw.redhat.com/harness-volume"
+# A harness image is read fully into memory (tree_digest, the volume import
+# tarball); an unbounded one can exhaust the VM. 512 MiB comfortably covers a
+# real bundle (skills, a few native plugins) with headroom to spare.
+HARNESS_IMAGE_MAX_BYTES = 512 * 1024 * 1024
+# Keys configure_harness may set; a shape change must unset the ones it
+# no longer wants, not leave them stale.
+HARNESS_CONFIG_KEYS = ("plugins.load.paths", "skills.load.extraDirs")
+OPENCLAW_EXEC_ENV = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
+                     "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
+# mcp.json env/header value: exactly ${VAR}, or Authorization-style
+# "Bearer ${VAR}". Any other prefix could smuggle a literal secret.
+MCP_PLACEHOLDER_ONLY = re.compile(
+    r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|Bearer \$\{[A-Za-z_][A-Za-z0-9_]*\})$",
+    re.IGNORECASE)
+# A stdio arg naming a credential-ish flag with a literal value, e.g.
+# "--api-key=sk-live-...". The "--flag value" two-token form is not covered.
+MCP_ARG_CREDENTIAL_RE = re.compile(
+    r"^--?[\w-]*(?:key|token|secret|password|passwd|auth)[\w-]*=(?P<value>.*)$",
+    re.IGNORECASE)
+# The podman driver's workload container (its supervisor has the same
+# sandbox labels but not the user's mounts): isolation.rs WORKLOAD_FILTER.
+WORKLOAD_ROLE_LABEL = "openshell.ai/isolation-role=sandbox"
+# The labels OpenShell 0.1.x resource admission requires on a mounted volume.
+ATTACHABLE_LABEL = "openshell.ai/sandbox-attachable"
+ATTACHABLE_WORKSPACE_LABEL = "openshell.ai/sandbox-attachable-workspace"
+
+
+def harness_image(ref):
+    """The digest-pinned image of an OCI harnessRef, or "" for an inline one."""
+    return (ref or {}).get("image", "") or ""
+
+
+def harness_volume_name(workspace, sandbox):
+    """One volume per sandbox. Names are DNS labels, so "<ws>-<sb>" alone
+    is ambiguous ("a-b"/"c" and "a"/"b-c"); a short hash of the pair keeps
+    it unique and the name readable."""
+    tag = hashlib.sha256(f"{workspace}/{sandbox}".encode()).hexdigest()[:8]
+    return f"{HARNESS_VOLUME_PREFIX}{workspace}-{sandbox}-{tag}"
+
+
+def harness_mounts_json(volume):
+    """--driver-config-json for OpenShell's podman driver: the sandbox's
+    harness volume, read-only at HARNESS_MOUNT."""
+    return json.dumps({"podman": {"mounts": [{
+        "type": "volume", "source": volume, "target": HARNESS_MOUNT, "read_only": True}]}},
+        separators=(",", ":"))
+
+
+def safe_rel_path(rel, where):
+    """A bundle-relative POSIX path: no absolute, no empty or '.'/'..' segment."""
+    parts = rel.split("/")
+    if not rel or rel.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        raise InstallerError(f"{where}: unsafe path {rel!r}")
+    return rel
+
+
+def read_harness_tar(path):
+    """{relpath: (bytes, executable)} from `podman export` of a harness image.
+
+    The bundle tree is the image root (FROM scratch, COPY . /). Directories and
+    macOS AppleDouble files are skipped; links, devices and paths that escape
+    the tree are refused. The tree (with each file's executable bit) is what
+    goes into the sandbox's harness volume.
+    """
+    files = {}
+    total = 0
+    with tarfile.open(path) as tar:
+        for member in tar.getmembers():
+            rel = member.name
+            while rel.startswith("./"):
+                rel = rel[2:]
+            rel = rel.lstrip("/")
+            if not rel or member.isdir() or rel.rsplit("/", 1)[-1].startswith("._"):
+                continue
+            safe_rel_path(rel, "harness image")
+            if not member.isfile():
+                raise InstallerError(f"harness image: {member.name!r} is not a regular file")
+            total += member.size
+            if total > HARNESS_IMAGE_MAX_BYTES:
+                raise InstallerError(
+                    f"harness image exceeds {HARNESS_IMAGE_MAX_BYTES} bytes uncompressed; refusing it")
+            files[rel] = (tar.extractfile(member).read(), bool(member.mode & 0o111))
+    if "harness.yaml" not in files:
+        raise InstallerError("harness image has no /harness.yaml at its root")
+    return files
+
+
+def write_harness_tar(path, files, marker):
+    """The tarball `podman volume import` fills the harness volume with -- the bundle files unchanged plus the marker. Owned by root in the user
+    namespace (that is the runtime user on the host, so the installer can read
+    and wipe the volume without `podman unshare`), world-readable, so the
+    sandbox user can read it through the read-only mount."""
+    dirs = set()
+    for rel in files:
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            dirs.add("/".join(parts[:i]))
+    with tarfile.open(path, "w") as tar:
+        def add(name, data=None, mode=0o644, isdir=False):
+            info = tarfile.TarInfo(name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            info.mtime = 0
+            if isdir:
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tar.addfile(info)
+            else:
+                info.mode = mode
+                info.size = len(data)
+                tar.addfile(info, fileobj=io.BytesIO(data))
+        for d in sorted(dirs):
+            add(d, isdir=True)
+        for rel in sorted(files):
+            data, executable = files[rel]
+            add(rel, data, 0o755 if executable else 0o644)
+        add(HARNESS_MARKER, (json.dumps(marker, sort_keys=True) + "\n").encode())
+
+
+def harness_tree_digest(files):
+    """tree_digest of a {relpath: (bytes, executable)} tree (the marker's
+    treeDigest), so a volume edited on the VM is detected and refilled."""
+    return tree_digest({rel: data for rel, (data, _) in files.items()})
+
+
+class VolumeDrift(Exception):
+    """A harness volume holds a symlink or other non-regular entry.
+
+    A writable mount from a second sandbox (or anything else with access to
+    the volume) can plant a symlink without changing the tree digest, since
+    it carries no file content; silently skipping it would leave `current()`
+    reporting the volume intact while OpenClaw loads whatever it points at.
+    """
+
+
+def read_volume_tree(root):
+    """{relpath: (bytes, executable)} of a filled volume, without the marker.
+
+    Raises VolumeDrift on a symlink or other non-regular entry.
+    """
+    root = Path(root)
+    files = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise VolumeDrift(f"{rel!r} is a symlink")
+        if not path.is_file() and not path.is_dir():
+            raise VolumeDrift(f"{rel!r} is not a regular file or directory")
+        if path.is_file() and rel != HARNESS_MARKER:
+            files[rel] = (path.read_bytes(), bool(path.stat().st_mode & 0o111))
+    return files
+
+
+def describe_harness_tree(files, inline=False):
+    """What OpenClaw has to be pointed at, and what governance must allow.
+
+    Reads harness.yaml (metadata, spec.agent, and the governance entries in
+    spec.plugins / spec.mcpServers) and mcp.json. OpenClaw never reads
+    harness.yaml; it is the installer's view of the bundle. Returns:
+      name, agent
+      skills               the bundle has skills/
+      agentPluginsBundle   plugin.json at the root (OpenClaw loads skills/ and
+                           mcp.json from the bundle root)
+       mcp                  the bundle has mcp.json
+       pluginDirs           native plugins under plugins/
+       governance           [{kind, name, governanceProfile, hosts}] to check
+                            against the gateway's catalog and the sandbox's
+                            providers
+
+    Keys never travel in a bundle. A plugin or MCP server that calls a
+    service names the provider profile (governanceProfile) that governs it;
+    the sandbox must have a provider of that type, which gives the process
+    the profile's env var holding a placeholder, and the sandbox's egress
+    proxy puts the real key in only for the profile's endpoints and
+    binaries. `inline` bundles come from a ConfigMap, which keeps no file
+    modes, so a stdio server cannot run a bundled file directly.
+    """
+    doc = _yaml(files["harness.yaml"][0].decode("utf-8"), "harness.yaml")
+    spec = doc.get("spec") or {}
+    name = (doc.get("metadata") or {}).get("name", "")
+    if "mcp.json" in files and "plugin.json" not in files:
+        raise InstallerError(
+            f"harness '{name}': mcp.json with no plugin.json at the bundle root; OpenClaw only "
+            "reads a bundle's mcp.json when the bundle root is on plugins.load.paths, which "
+            "openclaw_harness_config only sets for an Agent Plugins bundle. Add a plugin.json "
+            "at the bundle root")
+    plugin_dirs = sorted({rel.split("/")[1] for rel in files
+                          if rel.startswith("plugins/") and rel.count("/") >= 2})
+    declared_plugins = {item.get("name") for item in spec.get("plugins") or []}
+    for plugin in plugin_dirs:
+        if plugin not in declared_plugins:
+            log(f"WARN: harness '{name}': plugin '{plugin}' has no entry in harness.yaml "
+                "spec.plugins; its egress, if any, is enforced at runtime by the sandbox "
+                "proxy, not checked here")
+    governance = []
+    for item in spec.get("plugins") or []:
+        if item.get("governanceProfile"):
+            governance.append({"kind": "plugin", "name": item.get("name", ""),
+                               "governanceProfile": item["governanceProfile"], "hosts": []})
+    declared = {m.get("name"): m for m in spec.get("mcpServers") or []}
+    for server, decl in sorted(declared.items()):
+        stale = sorted(k for k in ("credentialSecret", "credentialSecretKey", "credentialEnvVar")
+                       if k in decl)
+        if stale:
+            raise InstallerError(
+                f"harness '{name}': mcp server '{server}' sets {', '.join(stale)}; keys no longer "
+                "reach the sandbox that way. Set governanceProfile to the provider type whose "
+                "key the server needs and give the sandbox a provider of that type: the server "
+                "reads a placeholder from the provider's env var (for example BRAVE_API_KEY) "
+                "and the sandbox's egress proxy adds the real key")
+    if "mcp.json" in files:
+        try:
+            servers = json.loads(files["mcp.json"][0]).get("mcpServers") or {}
+        except ValueError as exc:
+            raise InstallerError(f"harness '{name}': mcp.json is not valid JSON ({exc})") from None
+        for server, conf in sorted(servers.items()):
+            if not isinstance(conf, dict) or conf.get("type") not in ("stdio", "streamable-http", "sse"):
+                raise InstallerError(
+                    f"harness '{name}': mcp.json server '{server}' needs \"type\": \"stdio\", "
+                    "\"streamable-http\" or \"sse\" (OpenClaw ignores it otherwise)")
+            for field in ("env", "headers"):
+                for key, value in (conf.get(field) or {}).items():
+                    if not isinstance(value, str) or not MCP_PLACEHOLDER_ONLY.match(value):
+                        raise InstallerError(
+                            f"harness '{name}': mcp.json server '{server}' {field} '{key}' is not "
+                            "a bare ${VAR} placeholder (e.g. \"Bearer ${VAR}\"); a literal secret "
+                            "must not ship in a bundle's mcp.json, the ConfigMap or the image")
+            for arg in conf.get("args") or []:
+                match = isinstance(arg, str) and MCP_ARG_CREDENTIAL_RE.match(arg)
+                if match and not MCP_PLACEHOLDER_ONLY.match(match.group("value")):
+                    raise InstallerError(
+                        f"harness '{name}': mcp.json server '{server}' arg {arg!r} looks like a "
+                        "credential flag with a literal value; use --flag=${VAR} instead")
+            if isinstance(conf.get("url"), str):
+                creds = urlsplit(conf["url"])
+                if creds.username or creds.password:
+                    raise InstallerError(
+                        f"harness '{name}': mcp.json server '{server}' url has a literal "
+                        "credential in it (user:pass@host); a literal secret must not ship "
+                        "in a bundle's mcp.json, the ConfigMap or the image")
+            profile = (declared.get(server) or {}).get("governanceProfile", "")
+            if conf["type"] == "stdio":
+                command = conf.get("command")
+                if inline and isinstance(command, str) and "${PLUGIN_ROOT}" in command:
+                    raise InstallerError(
+                        f"harness '{name}': mcp server '{server}' runs {command!r}, a file in the "
+                        "bundle; an inline bundle keeps no file modes, so run it through its "
+                        "interpreter (for example command: node, args: [${PLUGIN_ROOT}/...]) "
+                        "or ship the bundle as an image")
+                # A stdio server runs inside the sandbox, under its policy. It
+                # needs a governanceProfile only when it calls a service.
+                if profile:
+                    governance.append({"kind": "MCP server", "name": server,
+                                       "governanceProfile": profile, "hosts": []})
+                else:
+                    log(f"WARN: harness '{name}': stdio MCP server '{server}' has no "
+                        "governanceProfile; its egress, if any, is enforced at runtime by "
+                        "the sandbox proxy, not checked here")
+                continue
+            host = urlsplit(conf.get("url") or "").hostname
+            if not host:
+                raise InstallerError(f"harness '{name}': mcp.json server '{server}' has no url host")
+            if not profile:
+                raise InstallerError(
+                    f"harness '{name}': remote MCP server '{server}' ({host}) needs a "
+                    "governanceProfile in harness.yaml spec.mcpServers")
+            governance.append({"kind": "MCP server", "name": server,
+                               "governanceProfile": profile, "hosts": [host]})
+    return {
+        "name": name,
+        "agent": spec.get("agent", "openclaw"),
+        "skills": any(rel.startswith("skills/") for rel in files),
+        "agentPluginsBundle": "plugin.json" in files,
+        "mcp": "mcp.json" in files,
+        "pluginDirs": plugin_dirs,
+        "governance": governance,
+    }
+
+
+def parse_profile_catalog(output):
+    """{profile id: set of endpoint hosts} from
+    `openshell provider list-profiles -o json` (checked on OpenShell 0.0.116)."""
+    try:
+        doc = json.loads(output or "")
+    except ValueError:
+        raise InstallerError("openshell provider list-profiles -o json did not return JSON") from None
+    if isinstance(doc, dict):
+        doc = doc.get("profiles") or doc.get("items") or []
+    catalog = {}
+    for item in doc if isinstance(doc, list) else []:
+        if isinstance(item, dict) and item.get("id"):
+            catalog[item["id"]] = {e.get("host") for e in item.get("endpoints") or []
+                                   if isinstance(e, dict) and e.get("host")}
+    return catalog
+
+
+def host_allowed(host, patterns):
+    """A profile endpoint host may be a glob (*-aiplatform.googleapis.com);
+    ports are not part of the match. Each `*` is one DNS label (no dots)."""
+    host = (host or "").split(":")[0].lower()
+    for pattern in patterns:
+        regex = re.escape((pattern or "").split(":")[0].lower()).replace(r"\*", r"[^.]*")
+        if re.fullmatch(regex, host):
+            return True
+    return False
+
+
+def openclaw_harness_config(info):
+    """OpenClaw config that makes it load the mounted bundle.
+
+    An Agent Plugins bundle (plugin.json at the root) brings its skills/ and
+    mcp.json (MCP servers) with it, so the bundle root goes on
+    plugins.load.paths. Otherwise skills/ is an extra skill directory.
+    plugins/ holds native OpenClaw plugins (tool code); OpenClaw discovers
+    every plugin under it from the one parent path, so adding or removing a
+    plugin in the bundle needs no config change (checked live on OpenClaw
+    2026.9.5).
+    """
+    config = {}
+    paths = []
+    if info["agentPluginsBundle"]:
+        paths.append(HARNESS_MOUNT)
+    elif info["skills"]:
+        config["skills.load.extraDirs"] = [f"{HARNESS_MOUNT}/skills"]
+    if info["pluginDirs"]:
+        paths.append(f"{HARNESS_MOUNT}/plugins")
+    if paths:
+        config["plugins.load.paths"] = paths
+    return config
+
+
+def parse_harness_files(files):
+    """Build bundles from flat ConfigMap keys harness__<bundle>__<hash>, plus
+    one harness__<bundle>__map key per bundle mapping each hash to its
+    relpath (content-addressed: the key no longer encodes the path, so it
+    never hits the iso9660/Joliet 64-character filename limit regardless of
+    how deep or long a bundle's paths are; see templates/configmap-bom.yaml).
+
+    The digest is computed, never authored here: the pin lives in
+    sandbox.yaml harnessRef, outside the hashed tree. Relpaths from the map
+    get the same .. / empty / absolute checks as read_harness_tar.
+    """
+    raw_by_bundle, maps = {}, {}
+    for key, raw in files.items():
+        parts = key.split("__")
+        if len(parts) != 3 or parts[0] != "harness":
+            raise InstallerError(f"unexpected harness file name: {key}")
+        bundle, token = parts[1], parts[2]
+        if token == "map":
+            try:
+                maps[bundle] = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise InstallerError(
+                    f"harness bundle {bundle!r}: map is not valid JSON ({exc})") from None
+        else:
+            raw_by_bundle.setdefault(bundle, {})[token] = raw
+    bundles = {}
+    for name in sorted(raw_by_bundle):
+        path_map = maps.get(name)
+        if path_map is None:
+            raise InstallerError(f"harness bundle {name!r} has no path map (harness__{name}__map)")
+        tree = {}
+        for hash_, raw in raw_by_bundle[name].items():
+            rel = path_map.get(hash_)
+            if rel is None:
+                raise InstallerError(
+                    f"harness bundle {name!r}: key 'harness__{name}__{hash_}' is not in its path map")
+            tree[safe_rel_path(rel, f"harness bundle {name!r} path map")] = raw
+        if "harness.yaml" not in tree:
+            raise InstallerError(f"harness bundle {name!r} has no harness.yaml")
+        doc = _yaml(tree["harness.yaml"].decode("utf-8"), f"harness/{name}/harness.yaml")
+        spec = doc.get("spec") or {}
+        bundles[name] = HarnessBundle(
+            name=(doc.get("metadata") or {}).get("name", name),
+            agent=spec.get("agent", "openclaw"),
+            digest=tree_digest(tree),
+            files={rel: base64.b64encode(raw).decode() for rel, raw in tree.items()},
+        )
+    return bundles
+
+
 def read_profile_files(directory):
-    """Read the flattened saw-bom ConfigMap: profiles__<profile>__<ws>__<file>."""
+    """Read the flattened saw-bom ConfigMap.
+
+    Returns (profile files as text, harness files as bytes, harness index).
+    Profile keys are profiles__<profile>__<ws>__<file>.yaml; harness keys are
+    harness__<bundle>__<hash-or-"map"> and hold base64 (see the digest
+    contract in templates/configmap-bom.yaml and parse_harness_files).
+    """
     directory = Path(directory)
     if not directory.is_dir():
-        return {}
-    files = {}
+        return {}, {}, {}
+    files, harness, index = {}, {}, {}
     for entry in sorted(directory.iterdir()):
         if entry.name.startswith(".") or not entry.is_file():
             continue  # kubelet/ISO housekeeping entries
-        if not (entry.name.startswith("profiles__") and entry.name.endswith(".yaml")):
+        if entry.name.startswith("profiles__") and entry.name.endswith(".yaml"):
+            files[entry.name] = entry.read_text(encoding="utf-8")
+        elif entry.name.startswith("harness__"):
+            try:
+                harness[entry.name] = base64.b64decode(
+                    entry.read_text(encoding="utf-8"), validate=True)
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise InstallerError(
+                    f"harness file {entry.name} is not valid base64 ({exc}); "
+                    "the chart must b64enc every harness key") from None
+        elif entry.name == "harness-index.yaml":
+            index = _yaml(entry.read_text(encoding="utf-8"), entry.name)
+        else:
             # A wrong key layout must not look like "no profiles".
             raise InstallerError(f"unexpected file in the profiles ConfigMap: {entry.name}")
-        files[entry.name] = entry.read_text(encoding="utf-8")
-    return files
+    return files, harness, index
 
 
 def _yaml(text, where):
@@ -533,7 +1097,8 @@ def parse_profiles(files):
                         agent=s.get("agent", "openclaw"),
                         image=s.get("image", ""),
                         providers=list(s.get("providers") or []),
-                        model=s.get("model", "")))
+                        model=s.get("model", ""),
+                        harness_ref=dict(s.get("harnessRef") or {})))
             profile.workspaces.append(ws)
         profiles.append(profile)
     return profiles
@@ -544,6 +1109,96 @@ def enabled_workspaces(profiles):
         for ws in profile.workspaces:
             if ws.enabled:
                 yield profile, ws
+
+
+def pinned_bundle(sb, bundles):
+    """The inline bundle a sandbox's harnessRef.name points at. The bundle
+    and the pin ship in the same ConfigMap, so harnessRef.digest is
+    optional; when it is set it must match."""
+    ref = sb.harness_ref or {}
+    bundle = bundles.get(ref.get("name"))
+    if bundle is None:
+        raise InstallerError(f"sandbox '{sb.name}' references unknown harness bundle "
+                             f"'{ref.get('name')}'")
+    want = ref.get("digest") or ""
+    if want and want != bundle.digest:
+        raise InstallerError(
+            f"harnessRef digest mismatch for sandbox '{sb.name}': sandbox.yaml says {want}, "
+            f"the bundle hashes to {bundle.digest}")
+    return bundle
+
+
+def check_harness_index(bundles, index):
+    """harness-index.yaml holds the digest Helm computed for each shipped
+    bundle; the installer recomputes it from the files it read. A mismatch
+    means the chart and the installer disagree on the tree_digest contract
+    or on the files (an encoding change on the way), so nothing is trusted."""
+    listed = (index or {}).get("bundles") or {}
+    for name, digest in sorted(listed.items()):
+        bundle = bundles.get(name)
+        if bundle is None:
+            raise InstallerError(f"harness-index.yaml lists bundle '{name}', but no files for it "
+                                 "were shipped")
+        if digest != bundle.digest:
+            raise InstallerError(
+                f"harness bundle '{name}': the chart computed {digest}, the installer "
+                f"{bundle.digest}; the files changed on the way or the tree_digest contract "
+                "differs between templates/configmap-bom.yaml and apply_bom.py")
+    for name in sorted(set(bundles) - set(listed)):
+        if listed or index:
+            raise InstallerError(f"harness bundle '{name}' is missing from harness-index.yaml")
+
+
+def check_driver_config_allowed(toml_path):
+    """A harness is mounted through caller driver config, which OpenShell
+    0.1.x refuses unless gateway.toml allows it (openshell-saw
+    allowDriverConfig). Checked before anything changes, instead of failing
+    at sandbox create. A missing file is left to install to report."""
+    try:
+        text = Path(toml_path).read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not re.search(r"^\s*allow_driver_config\s*=\s*true\s*(#.*)?$", text, re.M):
+        raise InstallerError(
+            "a sandbox has a harnessRef, but gateway.toml does not set allow_driver_config = "
+            "true, so OpenShell would refuse to mount it; set allowDriverConfig in the "
+            "openshell-saw chart")
+
+
+def validate_harness(profiles, bundles):
+    """Check every sandbox harnessRef against the delivered bundles.
+
+    Returns {sandbox name: harness source} for the status report, where the
+    source is the pinned image, or "<bundle>@<digest>" for a bundle shipped in
+    the saw-bom ConfigMap. Raises before anything is mutated. Governance
+    (each item's governanceProfile against the gateway's live catalog) is
+    checked at apply time, when the gateway can be asked.
+    """
+    revisions = {}
+    for _, ws in enabled_workspaces(profiles):
+        for sb in ws.sandboxes:
+            ref = sb.harness_ref or {}
+            if not (sb.enabled and ref):
+                continue
+            if sb.type != "openclaw":
+                raise InstallerError(
+                    f"sandbox '{sb.name}' has a harnessRef but type '{sb.type}'; "
+                    "only openclaw sandboxes load a harness")
+            image = harness_image(ref)
+            if image:
+                if not DIGEST_IMAGE_RE.match(image):
+                    raise InstallerError(
+                        f"sandbox '{sb.name}' harnessRef.image must be pinned by digest "
+                        f"(repo@sha256:<64 hex>), got {image!r}")
+                if ref.get("digest") or ref.get("name"):
+                    raise InstallerError(
+                        f"sandbox '{sb.name}' harnessRef: set image, or name (and "
+                        "optionally digest), not both")
+                revisions[sb.name] = image
+                continue
+            bundle = pinned_bundle(sb, bundles)
+            revisions[sb.name] = f"{bundle.name}@{bundle.digest}"
+    return revisions
 
 
 def validate_profiles(profiles):
@@ -1241,6 +1896,13 @@ MANAGED_LABEL_KEY = "saw.redhat.com/managed"
 # `Labels: key=value, ...`.
 _MANAGED_LABEL_RE = re.compile(
     r"(?:^|[\s,])saw\.redhat\.com/managed\s*[:=]\s*true\b")
+# A missing sandbox, workspace, or provider. Matches the short CLI line
+# (`sandbox 'name' not found`) and tonic's `status: NotFound, message: "..."`.
+# "provider profile 'x' was not found" is a catalog miss, not a missing object.
+_RESOURCE_NOT_FOUND_RE = re.compile(
+    r"status:\s*notfound\b"
+    r"|\b(?:sandbox|workspace|provider)\s+(?:'[^']*'\s+)?(?:was\s+)?not\s+found\b",
+    re.IGNORECASE)
 PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
 
 
@@ -1260,6 +1922,9 @@ def _managed_label_from_json(text):
         return None
     if not isinstance(doc, dict):
         return False
+    # Top-level `labels` is the OpenShell 0.1.2 `sandbox get --output json`
+    # shape (labels["saw.redhat.com/managed"] == "true"). Read that key on
+    # purpose so a later CLI that nests labels elsewhere is an explicit change.
     labels = doc.get("labels") or {}
     if not isinstance(labels, dict):
         return False
@@ -1267,9 +1932,18 @@ def _managed_label_from_json(text):
 
 
 def _cli_rejected_output_flag(text):
+    """True only for Clap's `unexpected argument '--output'` rejection.
+
+    A broader match (any error that mentions "output") would treat an
+    unrelated CLI failure as a missing `--output` flag and fall back to text.
+    """
     low = _strip_ansi(text).lower()
-    return "output" in low and (
-        "unexpected argument" in low or "unrecognized" in low or "unknown argument" in low)
+    return "unexpected argument '--output'" in low
+
+
+def _resource_not_found(text):
+    """True when the CLI says this sandbox, workspace, or provider is gone."""
+    return _RESOURCE_NOT_FOUND_RE.search(_strip_ansi(text)) is not None
 
 
 class Ledger:
@@ -1312,8 +1986,186 @@ class Ledger:
             if (obj["kind"], obj.get("workspace", ""), obj["name"]) != (kind, workspace, name)]
 
 
+# The OpenClaw gateways running in a sandbox, one pid per line. A pattern
+# (`pgrep -f`, `pkill -f`) is not usable here: the `sh -c` script that runs
+# this check also contains the text `openclaw gateway run` (it starts the
+# gateway), so the pattern matched the script's own shell, which then killed
+# itself, or concluded a gateway was already running. This walks /proc and
+# skips any `sh -c` process; it also matches the gateway once it has renamed
+# itself `openclaw-gateway`.
+_GATEWAY_PIDS_SH = (
+    'gateway_pids() { for d in /proc/[0-9]*; do '
+    'c=$(tr "\\000" " " < "$d/cmdline" 2>/dev/null) || continue; '
+    'case "$c" in *"sh -c "*) continue;; esac; '
+    'case "$c" in *"openclaw gateway run"*|openclaw-gateway*) echo "${d#/proc/}";; esac; '
+    'done; }')
+
+
+class HarnessVolume:
+    """A sandbox's podman named volume holding its harness bundle tree
+    unchanged, plus a marker with the source and tree digest. An unchanged,
+    intact volume is left alone; anything else is wiped and refilled in
+    place, so a file dropped from the bundle does not linger and the volume
+    keeps its identity (OpenShell stops a sandbox whose attached volume was
+    recreated). Runs as the runtime user, next to the rootless podman
+    OpenShell creates sandboxes with.
+    """
+
+    def __init__(self, shell, podman="podman"):
+        self.sh = shell
+        self.podman = podman
+
+    def _podman(self, *args, **kw):
+        return self.sh.run([self.podman, *args], **kw)
+
+    @staticmethod
+    def labels(workspace):
+        return {ATTACHABLE_LABEL: "true", ATTACHABLE_WORKSPACE_LABEL: workspace,
+                HARNESS_VOLUME_LABEL: "true"}
+
+    def inspect(self, volume):
+        """podman's view of the volume, or None when it does not exist.
+        `volume exists` first, so a missing volume is not logged as an error."""
+        if not self._podman("volume", "exists", volume, check=False, quiet=True).ok:
+            return None
+        got = self._podman("volume", "inspect", "--format", "json", volume, check=False, quiet=True)
+        if not got.ok:
+            return None
+        try:
+            doc = json.loads(got.out)
+        except ValueError:
+            raise InstallerError(f"podman volume inspect {volume} did not return JSON") from None
+        doc = doc[0] if isinstance(doc, list) and doc else doc
+        return doc if isinstance(doc, dict) else None
+
+    def admitted(self, info, workspace):
+        """True when the volume carries the labels OpenShell admits it with."""
+        labels = (info or {}).get("Labels") or {}
+        return all(labels.get(k) == v for k, v in self.labels(workspace).items())
+
+    def ensure(self, volume, workspace):
+        """Create the volume with its admission labels. Labels cannot be
+        changed on an existing volume: one without them is reported, so the
+        caller can free it (delete the sandbox that mounts it) and recreate
+        it with remove(). Returns the host mountpoint, or None when the
+        volume exists without the labels."""
+        info = self.inspect(volume)
+        if info is None:
+            label_args = [a for k, v in self.labels(workspace).items() for a in ("--label", f"{k}={v}")]
+            self._podman("volume", "create", *label_args, volume, quiet=True)
+            info = self.inspect(volume)
+        if info is None:
+            raise InstallerError(f"podman did not create volume {volume}")
+        if not self.admitted(info, workspace):
+            return None
+        mountpoint = info.get("Mountpoint") or ""
+        if not mountpoint:
+            raise InstallerError(f"podman gave no mountpoint for volume {volume}")
+        return Path(mountpoint)
+
+    def remove(self, volume):
+        """True once the volume is gone (podman refuses while it is in use)."""
+        return self._podman("volume", "rm", volume, check=False, quiet=True).ok
+
+    def marker(self, mountpoint):
+        """The marker the last fill wrote ({} when there is none)."""
+        try:
+            return json.loads((mountpoint / HARNESS_MARKER).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def current(self, mountpoint, source, expected_digest):
+        """(tree, marker) if the volume holds exactly `source`, intact; else
+        (None, marker).
+
+        `expected_digest` comes from outside the volume (ConfigMap digest for
+        an inline bundle, installer ledger for an image). The marker's own
+        treeDigest is not trusted: a workspace user who can mount the volume
+        writable could edit the tree, recompute the digest and rewrite the
+        marker to match.
+        """
+        marker = self.marker(mountpoint)
+        if marker.get("source") != source:
+            return None, marker
+        if expected_digest is None:
+            # No trusted digest yet (image bundle, no ledger): refill.
+            return None, marker
+        try:
+            tree = read_volume_tree(mountpoint)
+        except VolumeDrift as exc:
+            log(f"WARN: harness volume drift ({exc}); refilling")
+            return None, marker
+        except OSError as exc:
+            # A planted file unreadable by our uid (other owner in the user
+            # namespace) must not crash the apply: refill, same as drift.
+            log(f"WARN: harness volume unreadable ({exc}); refilling")
+            return None, marker
+        if harness_tree_digest(tree) != expected_digest:
+            return None, marker
+        return tree, marker
+
+    def fill(self, volume, mountpoint, source, tree):
+        """Wipe the volume, then import `tree` unchanged plus the marker.
+
+        A previous tree is tarred first so a failed import can restore it
+        instead of leaving the volume empty.
+        """
+        marker = {"source": source, "treeDigest": harness_tree_digest(tree)}
+        with tempfile.TemporaryDirectory(prefix="saw-harness-") as tmp:
+            backup = Path(tmp) / "prev.tar"
+            had = any(mountpoint.iterdir())
+            if had:
+                with tarfile.open(backup, "w") as tar:
+                    for child in mountpoint.iterdir():
+                        try:
+                            tar.add(child, arcname=child.name)
+                        except OSError as exc:
+                            # Content not readable by our uid (other owner in
+                            # the user namespace) cannot be backed up; proceed
+                            # without it rather than blocking the refill.
+                            log(f"WARN: could not back up {child.name} before refill ({exc})")
+            for child in list(mountpoint.iterdir()):
+                try:
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except PermissionError:
+                    # Content not written by this installer (other owner in the
+                    # user namespace): remove it from inside the namespace.
+                    self._podman("unshare", "rm", "-rf", str(child))
+            tarball = Path(tmp) / "bundle.tar"
+            write_harness_tar(tarball, tree, marker)
+            try:
+                self._podman("volume", "import", volume, str(tarball))
+            except InstallerError:
+                if had:
+                    with tarfile.open(backup) as tar:
+                        tar.extractall(mountpoint, filter="data")
+                raise
+        return marker
+
+    def verify(self, volume, workspace, source, expected_digest):
+        """Failures (list of text) unless the volume is admitted and holds
+        `source` intact against `expected_digest`."""
+        if self.sh.dry_run:
+            return []
+        info = self.inspect(volume)
+        if info is None:
+            return [f"volume {volume} does not exist"]
+        if not self.admitted(info, workspace):
+            return [f"volume {volume} lacks the openshell.ai/sandbox-attachable labels"]
+        tree, marker = self.current(
+            Path(info.get("Mountpoint") or ""), source, expected_digest)
+        if tree is None:
+            if marker.get("source") and marker.get("source") != source:
+                return [f"volume {volume} holds {marker['source']}, not {source}"]
+            return [f"volume {volume} does not hold an intact copy of {source}"]
+        return []
+
+
 class ProfileApplier:
-    def __init__(self, shell, cfg, creds, provider_profile_docs=None):
+    def __init__(self, shell, cfg, creds, provider_profile_docs=None, harness=None):
         self.sh = shell
         self.cfg = cfg
         self.creds = creds
@@ -1326,6 +2178,15 @@ class ProfileApplier:
         self.prune_mode = prune.get("mode", "off")
         self.prune_sandboxes = bool(prune.get("sandboxes", False))
         self.ledger = Ledger(prune["ledgerPath"], shell.dry_run) if prune.get("ledgerPath") else None
+        self.harness = harness or {"bundles": {}}
+        self.volumes = HarnessVolume(shell)
+        self.catalogs = {}            # workspace -> {profile id: endpoint hosts}
+        self.harness_info = {}        # (workspace, sandbox) -> describe_harness_tree()
+        self.harness_refilled = {}    # (workspace, sandbox) -> volume was (re)filled this apply
+        self.harness_volumes = set()  # volumes this apply wants to keep
+        self.harness_images = set()   # harnessRef.image refs this apply wants to keep
+        self.harness_digests = {}     # volume -> trusted tree digest, this apply
+        self.sandbox_failures = []    # "sandbox '<name>': <error>" kept for the raise at end
         for workspace in creds.values():
             for value in workspace.values():
                 shell.add_secret(value)
@@ -1508,21 +2369,346 @@ class ProfileApplier:
         return next((p for p in usable if p.model), usable[0] if usable else None)
 
     def sandbox_state(self, ws, sb):
-        """'running', 'broken' (Error/Completed) or 'missing'."""
+        """'running', 'broken' (Error/Completed), 'deleting' or 'missing'."""
         state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
         if not state.ok:
             return "missing"
         clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
+        if re.search(r"Phase:\s*Deleting", clean):
+            return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
-    def create_sandbox(self, ws, sb):
+    # Found live after a VM restart: a sandbox reports an error for a while
+    # as its supervisor reconnects, then recovers. Recreating it would lose
+    # /sandbox, so a broken sandbox gets this long to come back first.
+    BROKEN_GRACE_SECONDS = 90
+    # `sandbox delete` only accepts the deletion; creating the same name
+    # before the cleanup finishes fails with "already exists".
+    DELETE_WAIT_SECONDS = 300
+    POLL_SECONDS = 5
+
+    def wait_sandbox(self, ws, sb, until, seconds):
+        """Poll sandbox_state until until(state) or the time is up; the last state."""
         state = self.sandbox_state(ws, sb)
+        deadline = time.monotonic() + (0 if self.sh.dry_run else seconds)
+        while not until(state) and time.monotonic() < deadline:
+            time.sleep(self.POLL_SECONDS)
+            state = self.sandbox_state(ws, sb)
+        return state
+
+    def harness_source(self, sb):
+        """(source id, inline bundle) for a sandbox's harnessRef, or (None, None).
+
+        The source id is the pinned image, or "bundle:<name>@<digest>" for an
+        inline bundle from the saw-bom ConfigMap.
+        """
+        ref = sb.harness_ref or {}
+        if not ref:
+            return None, None
+        image = harness_image(ref)
+        if image:
+            return image, None
+        bundle = pinned_bundle(sb, self.harness["bundles"])
+        return f"bundle:{bundle.name}@{bundle.digest}", bundle
+
+    def desired_harness_mount(self, ws, sb):
+        """The volume the sandbox should mount at HARNESS_MOUNT, or None."""
+        return harness_volume_name(ws.name, sb.name) if sb.harness_ref else None
+
+    def _podman(self, *args, **kw):
+        return self.sh.run(["podman", *args], **kw)
+
+    def verify_harness_image(self, image):
+        """Fail closed unless `image` is signed by cfg harness.cosign.
+
+        Digest pin is not enough: anyone with registry write can push that
+        digest. CI already signs with cosign; this is the check at pull.
+        """
+        sig = (self.cfg.get("harness") or {}).get("cosign") or {}
+        identity, issuer = sig.get("identity") or "", sig.get("issuer") or ""
+        if not identity or not issuer:
+            raise InstallerError(
+                f"harness image {image} has no cosign identity/issuer configured; "
+                "refusing to use it")
+        result = self.sh.run(
+            ["cosign", "verify", "--certificate-identity", identity,
+             "--certificate-oidc-issuer", issuer, image],
+            check=False, quiet=True, force=True, timeout=120)
+        if not result.ok:
+            raise InstallerError(f"harness image {image} is not signed by {identity}")
+
+    def image_tree(self, image):
+        """The bundle tree of a harness image (with file modes). Pulled by
+        digest when it is not present yet.
+
+        Runs even under --dry-run (force): dry-run must refuse a bad image the
+        same way a real apply would, before it claims success.
+        """
+        self.verify_harness_image(image)
+        if not self._podman("image", "exists", image, check=False, quiet=True, force=True).ok:
+            self._podman("pull", "--quiet", image, timeout=900, force=True)
+        created = self._podman("create", image, "/harness.yaml", force=True)
+        cid = created.out.strip().splitlines()[-1] if created.out.strip() else ""
+        if not cid:
+            raise InstallerError(f"podman create returned no container id for {image}")
+        with tempfile.TemporaryDirectory(prefix="saw-harness-") as tmp:
+            exported = Path(tmp) / "image.tar"
+            try:
+                self._podman("export", "-o", str(exported), cid, force=True)
+            finally:
+                self._podman("rm", "-f", cid, check=False, quiet=True, force=True)
+            return read_harness_tar(exported)
+
+    def sandbox_harness_mount(self, ws, sb):
+        """(type, source, writable) of what the sandbox's container mounts at
+        HARNESS_MOUNT; None when it mounts nothing there; False when there
+        is no container to look at.
+
+        Read from podman, which OpenShell's podman driver runs the sandbox
+        container in:
+          - the container carries the labels openshell.ai/sandbox-name and
+            openshell.ai/sandbox-workspace, so it is found without guessing
+            its generated name (openshell-<ws>--<sandbox>-<uuid>);
+          - 0.1.x runs each sandbox as two containers with those labels, the
+            workload and its supervisor; only the workload
+            (openshell.ai/isolation-role=sandbox) has the user's mounts;
+          - `.Mounts` lists a named volume as {"Type": "volume", "Name":
+            <volume>, ...} (checked live on 0.0.116; same labels in 0.1.2,
+            driver_utils.rs).
+        """
+        names = self._podman("ps", "-a",
+                             "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
+                             "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
+                             "--filter", f"label={WORKLOAD_ROLE_LABEL}",
+                             "--format", "{{.Names}}", check=False, quiet=True)
+        found = (names.out or "").split()
+        if not names.ok or not found:
+            return False
+        if len(found) > 1:
+            raise InstallerError(f"more than one workload container for sandbox '{sb.name}' in "
+                                 f"workspace '{ws.name}': {', '.join(found)}")
+        name = found
+        got = self._podman("inspect", "--format", "{{json .Mounts}}", name[0],
+                           check=False, quiet=True)
+        try:
+            mounts = json.loads(got.out) if got.ok else []
+        except ValueError:
+            mounts = []
+        for mount in mounts or []:
+            if mount.get("Destination") == HARNESS_MOUNT:
+                kind = (mount.get("Type") or "").lower()
+                source = mount.get("Name") if kind == "volume" else mount.get("Source")
+                # Missing RW: treat as writable (not OK).
+                return (kind, source or "", bool(mount.get("RW", True)))
+        return None
+
+    def harness_mount_ok(self, ws, sb):
+        """True when the sandbox mounts exactly its harness volume read-only,
+        or, without a harnessRef, mounts nothing at HARNESS_MOUNT (a harness
+        that was removed must not stay mounted). A sandbox whose container
+        cannot be found is left to the gateway."""
+        seen = self.sandbox_harness_mount(ws, sb)
+        if seen is False:
+            log(f"WARN: no workload container found for sandbox '{sb.name}'; "
+                "not checking its harness mount")
+            return True
+        want = self.desired_harness_mount(ws, sb)
+        return seen == (("volume", want, False) if want else None)
+
+    def governance_catalog(self, ws):
+        """{profile id: endpoint hosts} the gateway serves in the workspace
+        right now (from the governance interceptor, or profiles imported into
+        the workspace). Read live, so there is no list to keep in sync. In
+        0.1.x `provider list-profiles` lists one workspace's catalog, so it
+        is read, and cached, per workspace."""
+        if ws.name not in self.catalogs:
+            # force: dry-run must still see the live catalog (see prepare_harness).
+            listed = self.cli("provider", "list-profiles", *ws_args(ws.name), "-o", "json",
+                              check=False, quiet=True, force=True)
+            if not listed.ok:
+                raise InstallerError("cannot read the gateway's provider profile catalog "
+                                     f"for workspace '{ws.name}' (openshell provider "
+                                     "list-profiles failed); refusing to fill a harness "
+                                     "without a governance check")
+            self.catalogs[ws.name] = parse_profile_catalog(listed.out)
+        return self.catalogs[ws.name]
+
+    def check_harness_governance(self, ws, sb, info):
+        """Each governed item's profile must be served by the gateway in the
+        sandbox's workspace, the sandbox must have a provider of that type
+        (without one, neither the profile's endpoints nor its key reach the
+        sandbox), and a remote MCP server's host must be one of that
+        profile's endpoints."""
+        if not info["governance"]:
+            return
+        catalog = self.governance_catalog(ws)
+        attached = {p.type for p in self.usable(ws) if p.name in sb.providers}
+        for item in info["governance"]:
+            profile = item["governanceProfile"]
+            what = f"harness '{info['name']}' {item['kind']} '{item['name']}'"
+            if profile not in catalog:
+                raise InstallerError(
+                    f"{what} names governanceProfile '{profile}', which the gateway does not "
+                    f"serve in workspace '{ws.name}'; refusing to fill the harness of sandbox "
+                    f"'{sb.name}'")
+            if profile not in attached:
+                raise InstallerError(
+                    f"{what} names governanceProfile '{profile}', but sandbox '{sb.name}' has no "
+                    f"provider of type '{profile}'; add one to the workspace's providers.yaml and "
+                    "to the sandbox's providers (its endpoints and key reach the sandbox only "
+                    "through a provider)")
+            for host in item["hosts"]:
+                if not host_allowed(host, catalog[profile]):
+                    allowed = ", ".join(sorted(catalog[profile])) or "none"
+                    raise InstallerError(
+                        f"{what} reaches {host}, which governanceProfile '{profile}' does not "
+                        f"allow (allowed: {allowed}); refusing to fill the harness of "
+                        f"sandbox '{sb.name}'")
+
+    def expected_harness_digest(self, volume, bundle, source):
+        """Trusted tree digest for `volume`, or None when none is known yet.
+
+        Inline: the ConfigMap digest. Image: this apply's confirmed digest,
+        else the ledger entry written after a previous fill, if it is for
+        this same `source` (a changed harnessRef makes a stale entry's digest
+        describe the wrong tree; a forged on-volume marker could otherwise
+        pair that stale-but-valid digest with a source string it does not
+        belong to and pass as intact). No ledger and no in-apply confirmation
+        means the volume is always refilled.
+        """
+        if bundle is not None:
+            return bundle.digest
+        if volume in self.harness_digests:
+            return self.harness_digests[volume]
+        if self.ledger is None:
+            return None
+        entry = self.ledger.data.get("harness", {}).get(volume, {})
+        return entry.get("treeDigest") if entry.get("source") == source else None
+
+    def prepare_harness(self, ws, sb):
+        """Check the sandbox's harness and fill its volume.
+
+        The bundle is read from the volume when it already holds this source
+        intact (no pull), else from the image (pulled by digest) or the
+        ConfigMap files. Governance is checked before anything is written:
+        a bundle that fails it never reaches the volume.
+        """
+        source, bundle = self.harness_source(sb)
+        if source is None:
+            return None
+        if bundle is None:
+            self.harness_images.add(source)
+        volume = harness_volume_name(ws.name, sb.name)
+        self.harness_volumes.add(volume)
+        # Dry-run still resolves the tree and runs governance (so a bundle
+        # that would fail apply cannot pass --dry-run); it skips volume I/O.
+        mountpoint = None if self.sh.dry_run else self.volumes.ensure(volume, ws.name)
+        expected_digest = self.expected_harness_digest(volume, bundle, source)
+        # None: the volume predates its admission labels, which cannot be
+        # added later; it is replaced below, after governance passed.
+        tree = (self.volumes.current(mountpoint, source, expected_digest)[0]
+                if mountpoint else None)
+        current = tree is not None
+        if current:
+            log(f"Harness volume {volume} already holds {source}")
+        elif bundle is None:
+            log(f"Harness image {source} for sandbox '{sb.name}'")
+            tree = self.image_tree(source)
+        else:
+            tree = {rel: (base64.b64decode(b64), False) for rel, b64 in bundle.files.items()}
+        if bundle is None:
+            # Confirmed for this apply so verify can trust it even with no ledger.
+            self.harness_digests[volume] = (
+                expected_digest if current else harness_tree_digest(tree))
+        info = describe_harness_tree(tree, inline=bundle is not None)
+        if info["agent"] != "openclaw":
+            raise InstallerError(f"harness {source} is for agent '{info['agent']}', "
+                                 f"sandbox '{sb.name}' runs openclaw")
+        self.check_harness_governance(ws, sb, info)
+        self.harness_info[(ws.name, sb.name)] = info
+        self.harness_refilled[(ws.name, sb.name)] = not current
+        if self.sh.dry_run:
+            log(f"Harness {source} for sandbox '{sb.name}' in volume {volume} (dry run)")
+            return info
+        if mountpoint is None:
+            log(f"Harness volume {volume} lacks its admission labels; recreating it "
+                f"(and sandbox '{sb.name}', which mounts it)")
+            self.delete_sandbox_and_wait(ws, sb)
+            self.remove_volume_and_wait(volume)
+            mountpoint = self.volumes.ensure(volume, ws.name)
+            if mountpoint is None:
+                raise InstallerError(f"podman created volume {volume} without its labels")
+        if not current:
+            marker = self.volumes.fill(volume, mountpoint, source, tree)
+            if bundle is None and self.ledger is not None:
+                self.ledger.data.setdefault("harness", {})[volume] = {
+                    "source": source, "treeDigest": marker["treeDigest"]}
+                self.ledger.save()
+            log(f"Harness volume {volume} filled from {source}")
+        return info
+
+    def delete_sandbox_and_wait(self, ws, sb, attempts=24, delay=5):
+        """Delete a sandbox and wait until the gateway no longer has it and
+        podman has removed its workload container: 0.1.x may accept the
+        delete with cleanup still pending, and its container keeps the
+        harness volume in use until it is gone."""
+        self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+        if self.sh.dry_run:
+            return
+        for _ in range(attempts):
+            if self.sandbox_state(ws, sb) == "missing" and self.sandbox_harness_mount(ws, sb) is False:
+                return
+            time.sleep(delay)
+        raise InstallerError(f"sandbox '{sb.name}' in workspace '{ws.name}' was not removed")
+
+    def remove_volume_and_wait(self, volume, attempts=12, delay=5):
+        for _ in range(attempts):
+            if self.volumes.remove(volume):
+                return
+            time.sleep(delay)
+        raise InstallerError(f"could not remove harness volume {volume} to relabel it")
+
+    def create_sandbox(self, ws, sb, configure_harness=True):
+        """configure_harness=False: the caller runs start_openclaw right
+        after this, which configures the harness itself; skip the redundant
+        round trip here."""
+        self.prepare_harness(ws, sb)
+        state = self.sandbox_state(ws, sb)
+        if state == "running" and not self.sh.dry_run and not self.harness_mount_ok(ws, sb):
+            # Mounts are fixed at create: a sandbox created before its
+            # harnessRef, one that still mounts a harness it no longer has,
+            # or one that mounts another volume there is created again.
+            # /sandbox/persist and other data volumes are kept by OpenShell;
+            # the rest is not.
+            want = self.desired_harness_mount(ws, sb)
+            log(f"Sandbox '{sb.name}' " + (f"does not mount its harness volume {want}"
+                                           if want else "still mounts a removed harness")
+                + "; recreating it")
+            self.delete_sandbox_and_wait(ws, sb)
+            state = "missing"
+        if state == "broken":
+            log(f"Sandbox '{sb.name}' reports an error; waiting up to "
+                f"{self.BROKEN_GRACE_SECONDS}s for it to recover")
+            state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
         if state == "broken":
             log(f"Sandbox '{sb.name}' is not running; recreating it")
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-        elif state == "running":
+            state = "deleting"
+        if state == "deleting":
+            # Also a deletion an earlier run started (found live: that run
+            # failed on "already exists" and left the sandbox Deleting).
+            log(f"Waiting for sandbox '{sb.name}' to be deleted")
+            state = self.wait_sandbox(ws, sb, lambda s: s == "missing", self.DELETE_WAIT_SECONDS)
+            if state != "missing":
+                raise InstallerError(f"sandbox '{sb.name}' was still being deleted after "
+                                     f"{self.DELETE_WAIT_SECONDS}s; the next apply recreates it")
+        if state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
+            if sb.harness_ref and configure_harness:
+                exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                            "--no-tty", "--"]
+                self.configure_harness(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
             self.remember("sandbox", ws.name, sb.name)
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
@@ -1531,6 +2717,9 @@ class ProfileApplier:
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
+        volume = self.desired_harness_mount(ws, sb)
+        if volume:
+            args += ["--driver-config-json", harness_mounts_json(volume)]
         for prov in sb.providers:
             if (ws.name, prov) in self.skipped:
                 log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
@@ -1590,26 +2779,40 @@ class ProfileApplier:
                              env=env, check=False, timeout=900)
         return result.ok
 
+    EXEC_READY_SECONDS = 300
+
+    def wait_exec_ready(self, ws, sb):
+        """Wait until `sandbox exec` works. Found live after a VM restart:
+        `sandbox get` already mentioned Ready while the phase was still
+        Provisioning, every exec failed with "not ready", and the OpenClaw
+        gateway was never started."""
+        if self.sh.dry_run:
+            return True
+        deadline = time.monotonic() + self.EXEC_READY_SECONDS
+        attempt = 0
+        while True:
+            probe = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                             "true", check=False, quiet=True)
+            if probe.ok:
+                return True
+            if time.monotonic() >= deadline:
+                log(f"WARN: sandbox '{sb.name}' did not accept exec within {self.EXEC_READY_SECONDS}s")
+                return False
+            attempt += 1
+            if attempt % 6 == 1:
+                log(f"  waiting for sandbox '{sb.name}' to be ready")
+            time.sleep(self.POLL_SECONDS)
+
     def start_openclaw(self, ws, sb, provider):
         """Onboard openclaw inside the sandbox and start its web gateway.
         These steps are best effort, as before; verification decides."""
         exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
-        if not self.sh.dry_run:
-            for attempt in range(20):
-                state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
-                clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
-                if "Ready" in clean and "Error" not in clean:
-                    break
-                log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
-                time.sleep(5)
+        self.wait_exec_ready(ws, sb)
         # No /sandbox chown: OpenShell 0.1.x runs the workload without
         # capabilities (root in the container cannot even read /sandbox) and
         # already gives /sandbox to the image's user.
-        token = secrets.token_hex(16)
-        self.sh.add_secret(token)
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
-        oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
-                  "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
+        oc_env = OPENCLAW_EXEC_ENV
         # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
         # own endpoint with the placeholder key this exec receives in the
         # provider's env var (e.g. NVIDIA_API_KEY); the sandbox proxy puts in
@@ -1639,19 +2842,156 @@ class ProfileApplier:
         if profile_id:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
-                     f"{oc_env} openclaw models auth activate {profile_id} --agent main", check=False)
-        self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config set gateway.auth.token '{token}'",
-                 check=False)
-        route = self.cfg.get("sandboxDashboardRoute")
-        if route:
-            self.cli(*exec_cmd, "sh", "-c",
-                     f"{oc_env} openclaw config set gateway.controlUi.allowedOrigins "
-                     f"'[\"https://{route}\"]'", check=False)
+                     f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
+                     check=False)
+        self.configure_harness(ws, sb, exec_cmd, oc_env)
+        # One script: the gateway secret is made and kept inside the sandbox
+        # (the installer never sees it). The gateway is restarted only when
+        # the harness was refilled, none is running, or its settings (auth
+        # mode, users, origins) changed: a restart cuts live sessions.
+        refilled = self.harness_refilled.get((ws.name, sb.name), False)
         self.cli(*exec_cmd, "sh", "-c",
-                 f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && nohup openclaw gateway run "
-                 "--allow-unconfigured --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &",
+                 openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled),
                  check=False)
         self.install_keepalive(ws, sb)
+
+    def configure_harness(self, ws, sb, exec_cmd, oc_env):
+        """Point OpenClaw at the mounted bundle (openclaw_harness_config).
+
+        Config only: the bundle's files reach the sandbox through the mount,
+        never through exec, and no key is written: a governed plugin or MCP
+        server gets its provider's placeholder from the sandbox environment.
+        """
+        info = self.harness_info.get((ws.name, sb.name))
+        desired = openclaw_harness_config(info) if info is not None else {}
+        for key, value in desired.items():
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config set {key} {shlex.quote(json.dumps(value))}",
+                     check=False)
+        for key in HARNESS_CONFIG_KEYS:
+            if key not in desired:
+                self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config unset {key}",
+                         check=False)
+
+    def verify_harness(self, ws, sb):
+        """The sandbox mounts exactly its harness volume, the volume holds
+        the pinned source intact, and the sandbox reads it through the mount
+        (the marker file, which names the source and tree digest)."""
+        if self.sh.dry_run:
+            return []
+        source, bundle = self.harness_source(sb)
+        if source is None:
+            if not self.harness_mount_ok(ws, sb):
+                return [f"{HARNESS_MOUNT} is still mounted although the sandbox has no "
+                        "harnessRef; the next apply recreates the sandbox"]
+            return []
+        volume = harness_volume_name(ws.name, sb.name)
+        expected_digest = self.expected_harness_digest(volume, bundle, source)
+        failures = self.volumes.verify(volume, ws.name, source, expected_digest)
+        if failures:
+            return failures
+        if not self.harness_mount_ok(ws, sb):
+            return [f"{HARNESS_MOUNT} is not mounted from volume {volume}; "
+                    "the next apply recreates the sandbox"]
+        expected = (Path(self.volumes.inspect(volume)["Mountpoint"]) / HARNESS_MARKER).read_bytes()
+        seen = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                        "cat", f"{HARNESS_MOUNT}/{HARNESS_MARKER}", check=False, quiet=True)
+        if not seen.ok or seen.out.strip() != expected.decode("utf-8", "replace").strip():
+            return [f"the sandbox does not see {source} at {HARNESS_MOUNT}"]
+        info = self.harness_info.get((ws.name, sb.name))
+        if info is None:
+            return []
+        exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
+        # `mcp list` never shows bundle servers; verify the bundle row of
+        # `plugins list --json` instead (mount row loaded, caps when present,
+        # native ids enabled).
+        plugin_json = self.cli(*exec_cmd, "sh", "-c",
+                               f"{OPENCLAW_EXEC_ENV} openclaw plugins list --json",
+                               check=False, quiet=True)
+        if not plugin_json.ok:
+            return [f"could not list OpenClaw plugins for sandbox '{sb.name}'"]
+        try:
+            parsed = json.loads(plugin_json.out)
+            rows = [p for p in (parsed.get("plugins") or []) if isinstance(p, dict)]
+        except (ValueError, AttributeError, TypeError):
+            return [f"could not parse `openclaw plugins list --json` for sandbox '{sb.name}'"]
+        by_id = {p.get("id") or p.get("name"): p for p in rows}
+        # Match the mount row first: a stock plugin could reuse the bundle name.
+        # rootDir only: Source may be an origin string ($OPENCLAW_HOME/...),
+        # not a path.
+        bundle = next((p for p in rows
+                       if p.get("format") == "bundle" and p.get("rootDir") == HARNESS_MOUNT),
+                      None)
+        if bundle is None:
+            bundle = by_id.get(info["name"])
+        if (not isinstance(bundle, dict) or not bundle.get("enabled")
+                or bundle.get("status") != "loaded"):
+            return [f"OpenClaw does not load the harness bundle '{info['name']}' "
+                    f"from {HARNESS_MOUNT} ({source})"]
+        caps = bundle.get("bundleCapabilities") or []
+        if caps:
+            need_caps = set()
+            if info["mcp"]:
+                need_caps.add("mcpServers")
+            if info["skills"]:
+                need_caps.add("skills")
+            missing_caps = sorted(need_caps - set(caps))
+            if missing_caps:
+                return [f"OpenClaw bundle '{info['name']}' lacks capability(ies) "
+                        f"{', '.join(missing_caps)} from {source}"]
+        missing = [p for p in info["pluginDirs"]
+                   if not by_id.get(p, {}).get("enabled", False)]
+        if missing:
+            return [f"OpenClaw does not list enabled plugin(s) {', '.join(missing)} "
+                    f"from {source}"]
+        desired = openclaw_harness_config(info)
+        for key in HARNESS_CONFIG_KEYS:
+            got = self.cli(*exec_cmd, "sh", "-c",
+                           f"{OPENCLAW_EXEC_ENV} openclaw config get {key}",
+                           check=False, quiet=True)
+            if key not in desired:
+                if got.ok and got.out.strip() and got.out.strip() not in ("null", "undefined"):
+                    return [f"OpenClaw still has {key} although the harness does not need it"]
+                continue
+            try:
+                seen = json.loads(got.out) if got.ok else None
+            except ValueError:
+                seen = None
+            if seen != desired[key]:
+                return [f"OpenClaw {key} does not match the harness ({got.out.strip() or 'unset'})"]
+        return []
+
+    def cleanup_harness_volumes(self):
+        """Remove harness volumes that no enabled sandbox wants any more (a
+        harnessRef removed, a sandbox disabled or pruned). podman refuses to
+        remove a volume a container still uses, so one still mounted stays
+        until that sandbox is gone."""
+        if self.sh.dry_run:
+            return
+        listed = self._podman("volume", "ls", "--format", "{{.Name}}", check=False, quiet=True)
+        if not listed.ok:
+            return
+        for volume in (listed.out or "").split():
+            if volume.startswith(HARNESS_VOLUME_PREFIX) and volume not in self.harness_volumes:
+                if self.volumes.remove(volume):
+                    log(f"Removed harness volume {volume}; no sandbox uses it any more")
+
+    def cleanup_harness_images(self):
+        """Remove previously-pulled harness images no sandbox wants any more.
+
+        Unlike volumes, a stray podman image carries no marker of its own, so
+        "previously pulled for a harness" has to be tracked across applies;
+        the ledger (already the trust anchor for prune) is where that lives.
+        No ledger configured: images just accumulate, as before.
+        """
+        if self.sh.dry_run or self.ledger is None:
+            return
+        previous = set(self.ledger.data.get("harnessImages", []))
+        for image in previous - self.harness_images:
+            if self._podman("rmi", image, check=False, quiet=True).ok:
+                log(f"Removed harness image {image}; no sandbox uses it any more")
+        self.ledger.data["harnessImages"] = sorted(self.harness_images)
+        self.ledger.save()
 
     def install_keepalive(self, ws, sb):
         """A system unit that keeps an exec session open so the sandbox stays
@@ -1684,10 +3024,10 @@ class ProfileApplier:
                 log(f"Sandbox '{sb.name}' already onboarded; skipping nemoclaw onboard")
             elif not self.onboard_nemoclaw(ws, sb, provider):
                 log(f"nemoclaw onboard failed for '{sb.name}'; continuing with plain sandbox create")
-            self.create_sandbox(ws, sb)
+            self.create_sandbox(ws, sb, configure_harness=False)
             self.start_openclaw(ws, sb, provider)
         elif sb.type == "openclaw":
-            self.create_sandbox(ws, sb)
+            self.create_sandbox(ws, sb, configure_harness=False)
             self.start_openclaw(ws, sb, provider)
         else:
             self.create_sandbox(ws, sb)
@@ -1708,10 +3048,23 @@ class ProfileApplier:
                     self.apply_provider(ws, provider)
             for sb in ws.sandboxes:
                 if sb.enabled:
-                    self.apply_sandbox(ws, sb)
+                    try:
+                        self.apply_sandbox(ws, sb)
+                    except InstallerError as exc:
+                        log(f"ERROR: sandbox '{sb.name}': {exc}")
+                        self.sandbox_failures.append(f"sandbox '{sb.name}': {exc}")
+                    except Exception as exc:
+                        log(f"ERROR: sandbox '{sb.name}': {exc}\n{traceback.format_exc()}")
+                        self.sandbox_failures.append(f"sandbox '{sb.name}': {exc}")
                 else:
                     log(f"Sandbox '{sb.name}' disabled, skipping")
         self.finish_prune()
+        self.cleanup_harness_volumes()
+        self.cleanup_harness_images()
+        if self.sandbox_failures:
+            raise InstallerError(
+                f"{len(self.sandbox_failures)} sandbox(es) failed to apply:\n" +
+                "\n".join(self.sandbox_failures))
 
     def finish_prune(self):
         if self.ledger is None or self.prune_mode == "off":
@@ -1737,22 +3090,37 @@ class ProfileApplier:
                                              "skipped": "providers were skipped this run"}
             self.ledger.save()
             return
+        if self.sandbox_failures:
+            # A sandbox that failed this run (governance refusal, transient
+            # registry/cosign error) was never remember()ed: the desired
+            # state this run is incomplete, not smaller on purpose.
+            log(f"WARN: not pruning this run: {len(self.sandbox_failures)} sandbox(es) failed to apply")
+            self.ledger.data["lastPrune"] = {"pruned": [], "wouldPrune": [],
+                                             "skipped": "sandboxes failed this run"}
+            self.ledger.save()
+            return
         self.prune()
 
     def managed_label_ok(self, kind, workspace, name, entry):
-        """Workspaces and sandboxes also carry saw.redhat.com/managed=true.
+        """True when the object may be pruned, False when it must be kept.
 
-        Adopted objects predate that label, so the ledger alone allows them.
-        Providers cannot be labeled. A missing object or a get that fails
-        for any other reason stays unlabeled: prune keeps it rather than
-        deleting something it could not identify.
+        None means get reported the object already gone, so the caller drops
+        the ledger entry instead of logging "not labeled" forever.
+
+        Adopted objects predate the managed label, so the ledger alone allows
+        them. Providers cannot be labeled. A get that fails for any other
+        reason (auth, a gateway error) stays unlabeled: prune keeps it rather
+        than deleting something it could not identify.
         """
         if entry.get("adopted") or kind not in ("workspace", "sandbox"):
             return True
         if kind == "sandbox":
             return self._sandbox_labeled(workspace, name)
         got = self.cli("workspace", "get", name, check=False, quiet=True)
-        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
 
     def _sandbox_labeled(self, workspace, name):
         got = self.cli("sandbox", "get", name, *ws_args(workspace),
@@ -1762,14 +3130,19 @@ class ProfileApplier:
             if parsed is None:
                 return _managed_label_in_text(got.out + "\n" + got.err)
             return parsed
-        # A CLI that predates `--output` rejects the flag. Retry the human
-        # text, which is `key: value`. Any other failure (not found, auth)
-        # is unlabeled.
         blob = got.out + "\n" + got.err
+        # Gone already. Do not confuse that with Clap rejecting `--output`.
+        if _resource_not_found(blob):
+            return None
+        # A CLI that predates `--output` rejects the flag. Retry the human
+        # text, which is `key: value`. Any other failure stays unlabeled.
         if not _cli_rejected_output_flag(blob):
             return False
         got = self.cli("sandbox", "get", name, *ws_args(workspace), check=False, quiet=True)
-        return got.ok and _managed_label_in_text(got.out + "\n" + got.err)
+        blob = got.out + "\n" + got.err
+        if not got.ok and _resource_not_found(blob):
+            return None
+        return got.ok and _managed_label_in_text(blob)
 
     def workspace_contents(self, name):
         """Sandboxes and providers still in the workspace, used to decide
@@ -1801,11 +3174,16 @@ class ProfileApplier:
         return contents
 
     def delete_managed(self, kind, workspace, name):
-        """Delete one ledger object. False leaves it in the ledger.
+        """Delete one ledger object.
+
+        True: the CLI deleted it. ``"missing"``: the CLI says it is already
+        gone. False: leave it in the ledger.
 
         A failed CLI delete must not look like success: prune() would log
         `deleted`, record it in lastPrune (and therefore status.json), and
         drop the ledger entry while the object is still on the gateway.
+        A not-found result is the exception: the object is already gone, so
+        the caller drops the ledger entry and logs ``not found``.
         """
         if kind == "sandbox":
             result = self.cli("sandbox", "delete", name, *ws_args(workspace), check=False)
@@ -1826,10 +3204,33 @@ class ProfileApplier:
             log(f"WARN: keeping {kind} '{name}': unknown kind; leaving it in the ledger")
             return False
         if not result.ok:
+            # sandbox/provider delete pass allow_missing on OpenShell 0.1.2, so
+            # they succeed when the object is already gone. workspace delete
+            # does not: a workspace removed by hand fails here. That is gone,
+            # not a referential-integrity failure, so the caller drops it.
+            if _resource_not_found(result.out + "\n" + result.err):
+                return "missing"
             where = f" in '{workspace}'" if workspace else ""
             log(f"WARN: keeping {kind} '{name}'{where}: delete failed; leaving it in the ledger")
             return False
         return True
+
+    def _forget_missing(self, kind, workspace, name, label, pruned, would):
+        """Drop a ledger entry the gateway no longer has.
+
+        `on` removes it so the next reconcile does not retry. `report` only
+        records the would-be cleanup.
+        """
+        if self.prune_mode == "report":
+            log(f"would delete {label}: not found")
+            would.append(label)
+            return
+        if self.prune_mode != "on":
+            return
+        where = f" in '{workspace}'" if workspace else ""
+        log(f"{kind} '{name}'{where}: not found; removing it from the ledger")
+        pruned.append(label)
+        self.ledger.drop(kind, workspace, name)
 
     def kept_sandbox_providers(self):
         """(workspace, provider-name) pairs, and workspaces, still needed by
@@ -1883,17 +3284,24 @@ class ProfileApplier:
                     log(f"keeping provider '{name}' in '{workspace}': a sandbox this apply "
                         "is keeping still uses it")
                     continue
-                if not self.managed_label_ok(kind, workspace, name, obj):
+                label = f"{kind} {workspace or '-'}/{name}"
+                labeled = self.managed_label_ok(kind, workspace, name, obj)
+                if labeled is None:
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                    continue
+                if not labeled:
                     log(f"keeping {kind} '{name}': not labeled {MANAGED_LABEL}")
                     continue
-                label = f"{kind} {workspace or '-'}/{name}"
                 if self.prune_mode == "report":
                     log(f"would delete {label}")
                     would.append(label)
                     continue
                 if self.prune_mode != "on":
                     continue
-                if self.delete_managed(kind, workspace, name):
+                outcome = self.delete_managed(kind, workspace, name)
+                if outcome == "missing":
+                    self._forget_missing(kind, workspace, name, label, pruned, would)
+                elif outcome:
                     log(f"deleted {label}")
                     pruned.append(label)
                     self.ledger.drop(kind, workspace, name)
@@ -1934,6 +3342,8 @@ class ProfileApplier:
                                         if p.name in sb.providers)
                     failures.append(f"{sb.type} sandbox '{sb.name}' in '{ws.name}' has no usable "
                                     f"provider: skipped {skipped}; the gateway has no profile for that type")
+                failures += [f"harness in sandbox '{sb.name}': {f}"
+                             for f in self.verify_harness(ws, sb)]
                 if sb.providers:
                     attached = self.cli("sandbox", "provider", "list", sb.name, *ws_args(ws.name),
                                         check=False, quiet=True).out
@@ -1947,6 +3357,643 @@ class ProfileApplier:
         if not failures:
             log("PASS  all workspaces, providers and sandboxes present")
         return failures
+
+
+def sandbox_ui_origins(cfg, workspace, sandbox):
+    """https origins the sandbox's OpenClaw control UI is opened from: the
+    legacy dashboard route, and the sandbox's own UI route (sandboxUi)."""
+    origins = []
+    if cfg.get("sandboxDashboardRoute"):
+        origins.append(f"https://{cfg['sandboxDashboardRoute']}")
+    for e in cfg.get("sandboxUi") or []:
+        if e.get("workspace") == workspace and e.get("sandbox") == sandbox and e.get("host"):
+            origins.append(f"https://{e['host']}")
+    return origins
+
+
+def sandbox_ui_trusted_users(cfg, workspace, sandbox):
+    """The users OpenClaw takes from the oauth2-proxy's X-Forwarded-User, or
+    None when the sandbox keeps token auth: it has no UI route, or
+    sandboxUiProxy.trustedProxy is off."""
+    proxy = cfg.get("sandboxUiProxy") or {}
+    if not (proxy.get("trustedProxy") or {}).get("enabled"):
+        return None
+    if not any(e.get("workspace") == workspace and e.get("sandbox") == sandbox
+               for e in cfg.get("sandboxUi") or []):
+        return None
+    return list(proxy.get("allowedUsers") or [])
+
+
+# The gateway's config file (OPENCLAW_HOME=/sandbox). `openclaw config get`
+# redacts secrets, so the existing one is read from the file.
+OPENCLAW_CONFIG = "/sandbox/.openclaw/openclaw.json"
+_READ_SECRET_JS = ('try{const a=(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).gateway||{}).auth||{};'
+                   'const t=[a.password,a.token].find(v=>typeof v==="string"&&/^[A-Za-z0-9_-]{16,}$/.test(v));'
+                   'if(t)process.stdout.write(t)}catch(e){}')
+# Writes gateway.auth.password ($SAW_GATEWAY_SECRET) into the config file.
+# Found live (OpenClaw 2026.9.x, openclaw/openclaw#162216): `config set`
+# removes the password as "inactive" in trusted-proxy mode, although the
+# gateway accepts it from local clients that send no forwarded headers
+# (openclaw/openclaw#82607). Without it the CLI got "device-required".
+_WRITE_PASSWORD_JS = ('const fs=require("fs"),f=process.argv[1];const c=JSON.parse(fs.readFileSync(f,"utf8"));'
+                      'c.gateway=c.gateway||{};c.gateway.auth=c.gateway.auth||{};'
+                      'c.gateway.auth.password=process.env.SAW_GATEWAY_SECRET;'
+                      'fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600})')
+_NEW_SECRET_JS = 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))'
+
+
+def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
+    """The sandbox shell script that configures and (re)starts OpenClaw's
+    gateway on 0.0.0.0:18789.
+
+    The gateway secret is kept across runs (read from the config file, made
+    once), so the CLI, the TUI and a saved UI session keep working.
+
+    Token mode (no UI route, or trustedProxy off): clients present the secret
+    as gateway.auth.token.
+
+    Trusted-proxy mode (a UI route behind the owner-only oauth2-proxy): the
+    Control UI needs no token. OpenClaw accepts a request only from the
+    trusted CIDRs (the forward arrives over loopback) and takes the user from
+    X-Forwarded-Email: oauth2-proxy sets it to the Keycloak
+    preferred_username it admitted (OIDC_EMAIL_CLAIM), overwriting any value
+    the browser sent. (Found live: its X-Forwarded-User is the Keycloak
+    subject, a UUID.) allowUsers is the same list the proxy admits, and their
+    UI devices are approved without pairing. Local clients (the CLI, the TUI,
+    `openclaw agent`) use the same secret as gateway.auth.password.
+
+    The settings are written on every run (the secret is the kept one, so a
+    running gateway and its config never disagree on it). The gateway is
+    restarted only when the harness was refilled, none is running, or the
+    settings differ from the ones it was started with (a fingerprint kept
+    next to the config): a restart cuts live UI and CLI sessions."""
+    q = shlex.quote
+    users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
+    run = ("nohup openclaw gateway run --allow-unconfigured "
+           "--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &")
+    token_auth = [
+        # JSON-quoted: `config set` parses values as JSON5, and a bare hex
+        # secret of digits only would become a number.
+        "openclaw config set gateway.auth.mode '\"token\"'",
+        'openclaw config set gateway.auth.token "\\"$secret\\""',
+        "openclaw config unset gateway.auth.trustedProxy >/dev/null 2>&1 || true",
+        "openclaw config unset gateway.trustedProxies >/dev/null 2>&1 || true",
+    ]
+    lines = [
+        "set -u",
+        f"export {oc_env}",
+        f"secret=$(node -e {q(_READ_SECRET_JS)} {OPENCLAW_CONFIG} 2>/dev/null)",
+        f'[ -n "$secret" ] || secret=$(node -e {q(_NEW_SECRET_JS)})',
+    ]
+    if users is None:
+        lines += token_auth
+    else:
+        tp = cfg["sandboxUiProxy"]["trustedProxy"]
+        cidrs = tp.get("cidrs") or TRUSTED_PROXY_CIDRS
+        basic = {"userHeader": TRUSTED_PROXY_USER_HEADER, "allowUsers": users}
+        loopback = {**basic, "allowLoopback": any(ipaddress.ip_network(c, strict=False).is_loopback
+                                                  for c in cidrs)}
+        full = {**loopback, "deviceAutoApprove": {"enabled": bool(tp.get("deviceAutoApprove", True)),
+                                                  "scopes": TRUSTED_PROXY_SCOPES}}
+        # Older OpenClaw releases (found live: the NemoClaw image's 2026.7.1)
+        # refuse the newer keys, and a refused `config set` left the mode
+        # trusted-proxy without its settings: the gateway did not start. So
+        # each smaller form is tried in turn, and the mode is switched only
+        # once one was saved; otherwise the sandbox keeps token auth.
+        lines += [
+            f"openclaw config set gateway.trustedProxies {q(json.dumps(cidrs))}",
+            "trusted=0",
+            f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(full))} && trusted=1",
+        ]
+        for what, value in (("deviceAutoApprove", loopback), ("allowLoopback", basic)):
+            lines += [
+                'if [ "$trusted" = 0 ]; then',
+                f'echo "WARN: this OpenClaw refused the trusted-proxy settings; trying without {what}"',
+                f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(value))} && trusted=1",
+                "fi",
+            ]
+        lines += [
+            # The mode after its settings: it is only valid once they are there.
+            'if [ "$trusted" = 1 ]; then',
+            "openclaw config set gateway.auth.mode '\"trusted-proxy\"'",
+            "else",
+            'echo "WARN: this OpenClaw refused every trusted-proxy form; the UI keeps token auth"',
+            *token_auth,
+            "fi",
+        ]
+    # NemoClaw's image sets OpenClaw's managed proxy to 10.200.0.1:3128,
+    # the explicit egress proxy of OpenShell 0.0.x. OpenShell 0.1.x proxies
+    # transparently and refuses that address (found live: connect EACCES, so
+    # every LLM call failed with "network connection error"). Unset, OpenClaw
+    # connects directly and the sandbox's own proxy applies the policy.
+    lines.append("openclaw config unset proxy >/dev/null 2>&1 || true")
+    origins = sandbox_ui_origins(cfg, workspace, sandbox)
+    if origins:
+        # The control UI is reached through a route, so the browser's Origin
+        # is the route's https URL.
+        lines.append(f"openclaw config set gateway.controlUi.allowedOrigins {q(json.dumps(origins))}")
+    # Every setting above is fixed text (the secret stays "$secret"), so
+    # their digest says whether the running gateway has them.
+    fingerprint = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    fp_file = '"${OPENCLAW_HOME:-/sandbox}/.openclaw/saw-gateway.sha256"'
+    if users is not None:
+        lines += [
+            'if [ "$trusted" = 1 ]; then',
+            # After the last `config set`, which would remove it again; on
+            # every run, as every run does `config set`.
+            f'SAW_GATEWAY_SECRET="$secret" node -e {q(_WRITE_PASSWORD_JS)} {OPENCLAW_CONFIG} '
+            '|| echo "WARN: could not set gateway.auth.password; the CLI needs a paired device"',
+            "fi",
+        ]
+    lines += [
+        _GATEWAY_PIDS_SH,
+        f'if [ {"1" if refilled else "0"} = 1 ] || [ -z "$(gateway_pids)" ] || '
+        f'[ "$(cat {fp_file} 2>/dev/null)" != {fingerprint} ]; then',
+        '  for p in $(gateway_pids); do kill "$p" 2>/dev/null; done',
+        "  sleep 1",
+        *([f'  OPENCLAW_GATEWAY_TOKEN="$secret" {run}'] if users is None else [
+            '  if [ "$trusted" = 1 ]; then',
+            f'  OPENCLAW_GATEWAY_PASSWORD="$secret" {run}',
+            "  else",
+            f'  OPENCLAW_GATEWAY_TOKEN="$secret" {run}',
+            "  fi"]),
+        f"  echo {fingerprint} 2>/dev/null > {fp_file} || true",
+        "fi",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+SANDBOX_UI_UNIT_RE = re.compile(r"^saw-ui-(forward|limit|proxy)-[a-z0-9-]+\.service$")
+# The forward listens on forwardPort + this (VM loopback only); the relay that
+# caps its connections listens on forwardPort, where oauth2-proxy sends.
+FORWARD_INTERNAL_OFFSET = 10000
+# At most this many connections reach `openshell forward service` per UI
+# (OpenShell allows 20 per sandbox; the rest are left for exec sessions).
+FORWARD_MAX_CONNECTIONS = 16
+SANDBOX_UI_LIMIT_PY = r'''"""Caps the connections to `openshell forward service` (SAW sandbox UI).
+
+OpenShell allows 20 concurrent forward connections per sandbox and closes
+the rest (RESOURCE_EXHAUSTED, "sandbox SSH connection limit reached",
+NVIDIA/OpenShell#3494). A browser loading the OpenClaw control UI through
+the route opens more than that at once, and the requests that lost came
+back as 502/504 after 30 s. This TCP relay sits between oauth2-proxy and the
+forward:
+
+- at most MAX connections reach the forward; the others wait for a free one;
+- while some wait, an HTTP keep-alive connection that has been idle for
+  IDLE_PREEMPT seconds after an answer is closed to make room (an HTTP
+  client opens a new one); WebSocket connections are never closed;
+- a connection the forward closes or resets before answering is retried;
+- a GET that gets no answer at all within ANSWER_WAIT is sent again on new
+  connections, and the first answer wins.
+
+  python3 saw_ui_limit.py LISTEN_PORT UPSTREAM_PORT [MAX]
+"""
+import asyncio
+import sys
+import time
+
+
+def log(message):
+    print(message, file=sys.stderr, flush=True)
+
+RETRIES = 8
+BUFFER_LIMIT = 1 << 20
+ANSWER_WAIT = 2.0       # seconds to wait for a first answer byte before giving up retries
+IDLE_PREEMPT = 2.0      # seconds an answered keep-alive connection may hold a slot others wait for
+HEDGES = 2              # extra connections for a repeatable request that gets no answer
+HEDGE_TOTAL = 25.0      # seconds before giving up on such a request (the router allows 30)
+# For a request that is not safe to send again and lost its answer.
+_AMBIGUOUS_BODY = b"The sandbox closed the connection; the request may have been processed.\n"
+AMBIGUOUS_ANSWER = (b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                    b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(_AMBIGUOUS_BODY)) + _AMBIGUOUS_BODY
+
+
+class Conn:
+    """One client connection holding (or waiting for) a slot."""
+
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.last = time.monotonic()
+        self.answered = False       # the forward spoke last: no request in flight
+        self.writers = []
+
+    def touch(self, answered):
+        self.last = time.monotonic()
+        self.answered = answered
+
+    def idle_for(self):
+        return time.monotonic() - self.last
+
+    def close(self):
+        for w in self.writers:
+            try:
+                w.transport.abort()
+            except Exception:
+                pass
+
+
+class Slots:
+    """MAX upstream connections at a time; idle keep-alive ones give way.
+
+    A client connection holds one slot for its upstream connection. A hedge
+    (an extra connection for a repeatable request that got no answer) takes
+    a slot of its own, only when one is free, and gives it back as soon as
+    it is closed or becomes the connection that answered."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.active = set()
+        self.extra = 0          # hedge connections open now
+        self.cond = asyncio.Condition()
+
+    def in_use(self):
+        return len(self.active) + self.extra
+
+    def try_extra(self):
+        """Take a slot for a hedge connection if one is free; never waits.
+        (No await: atomic within the event loop.)"""
+        if self.in_use() >= self.limit:
+            return False
+        self.extra += 1
+        return True
+
+    async def release_extra(self, count=1):
+        if count <= 0:
+            return
+        async with self.cond:
+            self.extra = max(0, self.extra - count)
+            self.cond.notify(count)
+
+    def victim(self):
+        idle = [c for c in self.active
+                if not c.websocket and c.answered and c.idle_for() >= IDLE_PREEMPT]
+        return min(idle, key=lambda c: c.last) if idle else None
+
+    def describe(self):
+        ws = sum(1 for c in self.active if c.websocket)
+        busy = sum(1 for c in self.active if not c.websocket and not c.answered)
+        idle = sorted(round(c.idle_for(), 1) for c in self.active if not c.websocket and c.answered)
+        return (f"{self.in_use()}/{self.limit} in use: {ws} websocket, {busy} awaiting an answer, "
+                f"{len(idle)} answered (idle s: {idle}), {self.extra} hedge")
+
+    async def acquire(self, conn):
+        start = time.monotonic()
+        logged = 0.0
+        async with self.cond:
+            while self.in_use() >= self.limit:
+                v = self.victim()
+                if v is not None:
+                    log(f"closing a keep-alive connection idle {v.idle_for():.1f}s to make room")
+                    self.active.discard(v)
+                    v.close()
+                    break
+                waited = time.monotonic() - start
+                if waited - logged >= 5:
+                    logged = waited
+                    log(f"waiting {waited:.0f}s for a slot; {self.describe()}")
+                try:
+                    await asyncio.wait_for(self.cond.wait(), 0.25)
+                except asyncio.TimeoutError:
+                    pass
+            self.active.add(conn)
+        if time.monotonic() - start >= 1:
+            log(f"got a slot after {time.monotonic() - start:.1f}s; {self.describe()}")
+
+    async def release(self, conn):
+        async with self.cond:
+            if conn in self.active:
+                self.active.discard(conn)
+                self.cond.notify()
+
+
+async def relay(reader, writer, conn, answered):
+    """Copy until EOF, then half-close the other side."""
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            conn.touch(answered)
+            writer.write(data)
+            await writer.drain()
+        if writer.can_write_eof():
+            writer.write_eof()
+    except (ConnectionError, OSError):
+        pass
+
+
+class Ambiguous(Exception):
+    """The request reached the forward, but no answer came back: it may or
+    may not have been processed, so it is not sent again."""
+
+
+async def open_answering(upstream, sent, slots):
+    """Connect to the forward and send the client's first bytes.
+
+    Retries when nothing was sent (the connection failed), and, for a
+    request that is safe to send again (replayable), when the forward
+    closes or resets the connection without answering: that is how it
+    refuses a connection past its limit. Any other request may already
+    have been processed by then, so it is not sent again: Ambiguous."""
+    for attempt in range(RETRIES + 1):
+        try:
+            ureader, uwriter = await asyncio.open_connection("127.0.0.1", upstream)
+        except OSError:
+            await asyncio.sleep(min(1.0, 0.2 * (attempt + 1)))
+            continue
+        try:
+            uwriter.write(sent)
+            await uwriter.drain()
+            # A refused forward connection closes (or resets) at once. A
+            # request still being sent (a large body) gets no answer yet:
+            # relay it.
+            first = await asyncio.wait_for(ureader.read(65536), ANSWER_WAIT)
+        except asyncio.TimeoutError:
+            if not hedgeable(sent):
+                log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); relaying without retries")
+                return ureader, uwriter, b""
+            return await hedge(upstream, sent, ureader, uwriter, slots)
+        except (ConnectionError, OSError):
+            first = b""
+        if first:
+            return ureader, uwriter, first
+        uwriter.close()
+        if not replayable(sent):
+            raise Ambiguous()
+        await asyncio.sleep(min(1.0, 0.2 * (attempt + 1)))
+    return None, None, b""
+
+
+def replayable(sent):
+    """A complete GET/HEAD/OPTIONS request without a body (a WebSocket
+    upgrade included: no answer means no upgrade): sending it again cannot
+    repeat a change."""
+    head = sent.split(b"\r\n\r\n", 1)
+    return len(head) == 2 and not head[1] and sent.split(b" ", 1)[0] in (b"GET", b"HEAD", b"OPTIONS")
+
+
+def hedgeable(sent):
+    """A replayable request that is not a WebSocket upgrade: safe to send
+    again on another connection while the first is still open."""
+    return replayable(sent) and b"upgrade: websocket" not in sent.lower()
+
+
+async def hedge(upstream, sent, ureader, uwriter, slots):
+    """Found live: a request through the forward sometimes got no answer at
+    all (no error, nothing in the forward's log) and the browser saw a 504.
+    For a request that is safe to repeat, send it again on new connections
+    and keep whichever answers first. Each extra connection needs a free
+    slot (Slots.try_extra); without one, the request just keeps waiting on
+    the connections it has."""
+    pending = {asyncio.ensure_future(ureader.read(65536)): (ureader, uwriter)}
+    extras = 0
+    deadline = time.monotonic() + HEDGE_TOTAL
+    try:
+        for extra in range(HEDGES + 1):
+            if extra < HEDGES:
+                if slots.try_extra():
+                    extras += 1
+                    log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); "
+                        f"sending it again ({extra + 1})")
+                    try:
+                        r, w = await asyncio.open_connection("127.0.0.1", upstream)
+                        w.write(sent)
+                        await w.drain()
+                        pending[asyncio.ensure_future(r.read(65536))] = (r, w)
+                    except (ConnectionError, OSError):
+                        pass
+                else:
+                    log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); "
+                        "no free slot to send it again")
+            wait = ANSWER_WAIT * 2 if extra < HEDGES else max(0.0, deadline - time.monotonic())
+            done, _ = await asyncio.wait(pending, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                r, w = pending.pop(task)
+                try:
+                    data = task.result()
+                except (ConnectionError, OSError):
+                    data = b""
+                if data:
+                    for other, (_, ow) in pending.items():
+                        other.cancel()
+                        ow.close()
+                    pending.clear()
+                    return r, w, data
+                w.close()
+            if not pending:
+                break
+        for other, (_, ow) in pending.items():
+            other.cancel()
+            ow.close()
+        log(f"no answer on {extras + 1} connections ({sent[:60]!r})")
+        return None, None, b""
+    finally:
+        # The connection that answered (if any) runs on the client's own
+        # slot; every extra one taken here is closed by now.
+        await slots.release_extra(extras)
+
+
+def handler(upstream, slots):
+    async def handle(creader, cwriter):
+        conn = None
+        try:
+            # The first bytes tell an HTTP request from a WebSocket upgrade,
+            # and are what a retry resends.
+            sent = await creader.read(65536)
+            if not sent:
+                return
+            conn = Conn(b"upgrade: websocket" in sent.lower())
+            conn.writers.append(cwriter)
+            await slots.acquire(conn)
+            try:
+                ureader, uwriter, first = await open_answering(upstream, sent, slots)
+            except Ambiguous:
+                log(f"the forward closed without an answer ({sent[:60]!r}); "
+                    "not sending it again, it may have been processed")
+                cwriter.write(AMBIGUOUS_ANSWER)
+                await cwriter.drain()
+                return
+            if ureader is None:
+                log("the forward refused the connection on every retry")
+                return
+            conn.writers.append(uwriter)
+            conn.touch(bool(first))
+            if first:
+                cwriter.write(first)
+                await cwriter.drain()
+            await asyncio.gather(relay(creader, uwriter, conn, False),
+                                 relay(ureader, cwriter, conn, True))
+            uwriter.close()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            if conn is not None:
+                await slots.release(conn)
+            cwriter.close()
+    return handle
+
+
+async def main(listen, upstream, limit):
+    server = await asyncio.start_server(handler(upstream, Slots(limit)), "127.0.0.1", listen,
+                                        limit=BUFFER_LIMIT)
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    listen_port, upstream_port = int(sys.argv[1]), int(sys.argv[2])
+    max_conns = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+    asyncio.run(main(listen_port, upstream_port, max_conns))
+'''
+
+
+
+def sandbox_ui_units(cfg, home, cookie, gateway):
+    """{unit file name: content} plus {file: content} for every sandbox UI.
+
+    Per entry of cfg["sandboxUi"] (rendered by the openshell-saw chart):
+      saw-ui-forward-<ws>-<sb>  `openshell forward service`: VM
+                                127.0.0.1:<forwardPort + 10000> to the
+                                sandbox's 127.0.0.1:<targetPort> (OpenClaw,
+                                listening on 0.0.0.0 in the sandbox)
+      saw-ui-limit-<ws>-<sb>    a TCP relay on 127.0.0.1:<forwardPort> that
+                                lets at most FORWARD_MAX_CONNECTIONS through
+                                to the forward and queues the rest (OpenShell
+                                refuses more than 20 per sandbox)
+      saw-ui-proxy-<ws>-<sb>    oauth2-proxy on 0.0.0.0:<proxyPort> (what the
+                                route reaches) in front of the relay. It
+                                signs in with Keycloak (PKCE, the dashboard's
+                                public client) and admits only the users in
+                                sandbox-ui-users (preferred_username): the
+                                workspace owner and sandboxUiProxy.allowedUsers
+                                (saw-ui-<ws>-<sb>.users).
+    """
+    proxy = cfg.get("sandboxUiProxy") or {}
+    config_dir = Path(home) / ".config" / "openshell"
+    users = "".join(f"{u}\n" for u in proxy.get("allowedUsers") or [])
+    units, files = {}, {}
+    limiter = config_dir / "saw-ui-limit.py"
+    if cfg.get("sandboxUi"):
+        files[limiter] = SANDBOX_UI_LIMIT_PY
+    for e in cfg.get("sandboxUi") or []:
+        tag = f"{e['workspace']}-{e['sandbox']}"
+        forward, proxy_unit = f"saw-ui-forward-{tag}.service", f"saw-ui-proxy-{tag}.service"
+        env_file = config_dir / f"saw-ui-{tag}.env"
+        # One users file per proxy: each container relabels its mount
+        # privately (:Z), which a shared file would not survive.
+        users_file = config_dir / f"saw-ui-{tag}.users"
+        files[users_file] = users
+        files[env_file] = "".join(f"{k}={v}\n" for k, v in {
+            "OAUTH2_PROXY_HTTP_ADDRESS": f"0.0.0.0:{e['proxyPort']}",
+            "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{e['forwardPort']}",
+            "OAUTH2_PROXY_PROVIDER": "oidc",
+            "OAUTH2_PROXY_OIDC_ISSUER_URL": cfg["oidcIssuer"],
+            "OAUTH2_PROXY_CLIENT_ID": proxy.get("clientId", "openshell-dashboard"),
+            "OAUTH2_PROXY_CLIENT_SECRET_FILE": "/dev/null",
+            "OAUTH2_PROXY_CODE_CHALLENGE_METHOD": "S256",
+            "OAUTH2_PROXY_REDIRECT_URL": f"https://{e['host']}/oauth2/callback",
+            "OAUTH2_PROXY_COOKIE_SECRET": cookie,
+            "OAUTH2_PROXY_COOKIE_NAME": f"_saw_ui_{e['proxyPort']}",
+            "OAUTH2_PROXY_COOKIE_SECURE": "true",
+            "OAUTH2_PROXY_COOKIE_REFRESH": "60s",
+            "OAUTH2_PROXY_SCOPE": "openid email profile",
+            # Who gets in: the Keycloak username, matched against the file.
+            "OAUTH2_PROXY_OIDC_EMAIL_CLAIM": "preferred_username",
+            # X-Forwarded-Email (= that username), which OpenClaw's
+            # trusted-proxy mode reads; oauth2-proxy overwrites any value the
+            # browser sent.
+            "OAUTH2_PROXY_PASS_USER_HEADERS": "true",
+            "OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE": "/etc/saw/sandbox-ui-users",
+            "OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL": "true",
+            "OAUTH2_PROXY_SKIP_PROVIDER_BUTTON": "true",
+            "OAUTH2_PROXY_REVERSE_PROXY": "true",
+            "OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY": str(bool(proxy.get("insecureSkipTlsVerify"))).lower(),
+        }.items())
+        internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
+        limit_unit = f"saw-ui-limit-{tag}.service"
+        units[forward] = (
+            f"[Unit]\nDescription=SAW sandbox UI: forward {e['sandbox']} ({e['workspace']}) port "
+            f"{proxy.get('targetPort', 18789)} to 127.0.0.1:{internal}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStart=/usr/local/bin/openshell --gateway {gateway} forward service {e['sandbox']} "
+            f"--workspace {e['workspace']} --target-port {proxy.get('targetPort', 18789)} "
+            f"--local 127.0.0.1:{internal}\n"
+            f"Restart=always\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
+        # Found live: the control UI's burst of requests went past OpenShell's
+        # 20 forward connections per sandbox; the refused ones came back as
+        # 502/504 after 30 s. The relay queues them instead.
+        units[limit_unit] = (
+            f"[Unit]\nDescription=SAW sandbox UI: at most {FORWARD_MAX_CONNECTIONS} connections "
+            f"from 127.0.0.1:{e['forwardPort']} to the forward of {e['sandbox']} ({e['workspace']})\n"
+            f"After={forward}\nWants={forward}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStart=/usr/bin/python3 {limiter} {e['forwardPort']} {internal} {FORWARD_MAX_CONNECTIONS}\n"
+            f"Restart=always\nRestartSec=2s\n\n[Install]\nWantedBy=default.target\n")
+        units[proxy_unit] = (
+            f"[Unit]\nDescription=SAW sandbox UI: oauth2-proxy for {e['sandbox']} ({e['workspace']}) "
+            f"on port {e['proxyPort']}\nAfter={limit_unit}\nWants={limit_unit}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStartPre=-/usr/bin/podman rm -f saw-ui-proxy-{tag}\n"
+            f"ExecStart=/usr/bin/podman run --rm --name saw-ui-proxy-{tag} --network host "
+            f"--env-file={env_file} -v {users_file}:/etc/saw/sandbox-ui-users:ro,Z "
+            f"{proxy.get('image', 'quay.io/oauth2-proxy/oauth2-proxy:v7.9.0')}\n"
+            f"ExecStop=/usr/bin/podman stop -t 5 saw-ui-proxy-{tag}\n"
+            f"Restart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
+    return units, files
+
+
+def setup_sandbox_ui(shell, cfg, home):
+    """Run a forward and an owner-only oauth2-proxy per sandbox web UI, as
+    `systemctl --user` units of the runtime user; remove the units of
+    sandboxes that no longer have a UI route. Best effort: a failure here
+    leaves the workspaces usable, and verify reports it."""
+    entries = cfg.get("sandboxUi") or []
+    unit_dir = Path(home) / ".config" / "systemd" / "user"
+    existing = set() if shell.dry_run or not unit_dir.is_dir() else {
+        p.name for p in unit_dir.iterdir() if SANDBOX_UI_UNIT_RE.match(p.name)}
+    units, files = {}, {}
+    if entries:
+        if not cfg.get("oidcIssuer"):
+            log("WARN: sandbox UI routes need oidcIssuer (Keycloak); not starting their proxies")
+            entries = []
+        else:
+            cookie_file = Path(home) / ".config" / "openshell" / "dashboard-cookie-secret"
+            if shell.dry_run:
+                cookie = "dry-run"
+            elif cookie_file.exists():
+                cookie = cookie_file.read_text(encoding="utf-8").strip()
+            else:
+                cookie_file.parent.mkdir(parents=True, exist_ok=True)
+                cookie = secrets.token_hex(16)
+                cookie_file.write_text(cookie, encoding="utf-8")
+                os.chmod(cookie_file, 0o600)
+            shell.add_secret(cookie)
+            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"))
+    stale = sorted(existing - set(units))
+    for name in stale:
+        log(f"Removing sandbox UI unit {name}; its sandbox no longer has a UI route")
+        shell.run(["systemctl", "--user", "disable", "--now", name], check=False)
+        if not shell.dry_run:
+            (unit_dir / name).unlink(missing_ok=True)
+    if not units:
+        if stale:
+            shell.run(["systemctl", "--user", "daemon-reload"], check=False)
+        return
+    if not shell.dry_run:
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        for path, text in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            os.chmod(path, 0o600 if path.suffix == ".env" else 0o644)
+        for name, text in units.items():
+            (unit_dir / name).write_text(text, encoding="utf-8")
+    for e in entries:
+        log(f"Sandbox UI: https://{e['host']} -> {e['sandbox']} ({e['workspace']})")
+    shell.run(["systemctl", "--user", "daemon-reload"], check=False)
+    shell.run(["systemctl", "--user", "enable", *sorted(units)], check=False)
+    # restart, not `enable --now`: a running proxy keeps its old env file.
+    shell.run(["systemctl", "--user", "restart", *sorted(units)], check=False)
 
 
 def setup_dashboard(shell, cfg, script, home):
@@ -2012,11 +4059,18 @@ class Inputs:
         """Load and validate everything. Nothing is changed."""
         bom = load_bom(self.bom)
         cfg = load_config(self.config)
-        profiles = parse_profiles(read_profile_files(self.profiles))
+        profile_files, harness_files, index = read_profile_files(self.profiles)
+        profiles = parse_profiles(profile_files)
         validate_profiles(profiles)
         check_profiles_against_bom(profiles, bom)
         creds = resolve_credentials(profiles, self.secrets)
-        return bom, cfg, profiles, creds
+        bundles = parse_harness_files(harness_files)
+        check_harness_index(bundles, index)
+        revisions = validate_harness(profiles, bundles)
+        if revisions:
+            check_driver_config_allowed(self.installer / "gateway.toml")
+        harness = {"bundles": bundles, "revisions": revisions}
+        return bom, cfg, profiles, creds, harness
 
 
 class Status:
@@ -2034,7 +4088,7 @@ class Status:
     def read(self):
         return read_json(self.path, {})
 
-    def set(self, phase, bom=None, message="", signature=None, pruned=None, would_prune=None):
+    def set(self, phase, bom=None, message="", signature=None, pruned=None, would_prune=None, extra=None):
         log(f"{self.step}: {phase}{' - ' + message if message else ''}")
         if self.dry_run:
             return
@@ -2043,6 +4097,7 @@ class Status:
             "phase": phase, "bom": bom, "message": message,
             "installerVersion": INSTALLER_VERSION,
             "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **(extra or {}),
         }
         if signature:
             section["signature"] = signature
@@ -2062,12 +4117,15 @@ class Status:
 
 
 def cmd_validate(args):
-    bom, cfg, profiles, creds = Inputs(args.inputs).load()
+    bom, cfg, profiles, creds, harness = Inputs(args.inputs).load()
     workspaces = [ws.name for _, ws in enabled_workspaces(profiles)]
     log(f"BOM {bom['metadata']['name']}: " + ", ".join(
         f"{c} {e['version']}" for c, e in bom["spec"]["openshell"].items()))
     log(f"VM {cfg['vmName']}: {len(workspaces)} workspace(s) {workspaces}, "
         f"{sum(len(v) for v in creds.values())} credential(s) resolved")
+    if harness["bundles"]:
+        log(f"harness: {len(harness['bundles'])} bundle(s), revisions "
+            f"{harness['revisions']}")
     log("inputs are valid")
     return 0
 
@@ -2169,10 +4227,23 @@ def provider_profiles(installer_dir):
     return found
 
 
-def plan_for_user(cfg, profiles, creds, dashboard_script, provider_profile_docs=None):
+def plan_for_user(cfg, profiles, creds, dashboard_script,
+                  provider_profile_docs=None, harness=None):
+    harness = harness or {}
     return {"config": cfg, "profiles": [asdict(p) for p in profiles],
             "credentials": creds, "dashboardScript": str(dashboard_script),
-            "providerProfiles": provider_profile_docs or {}}
+            "providerProfiles": provider_profile_docs or {},
+            "harness": {"bundles": {k: asdict(v) for k, v
+                                    in (harness.get("bundles") or {}).items()}}}
+
+
+def harness_from_plan(data):
+    raw = data.get("harness") or {}
+    bundles = {}
+    for name, b in (raw.get("bundles") or {}).items():
+        bundles[name] = HarnessBundle(
+            name=b["name"], agent=b["agent"], digest=b["digest"], files=b["files"])
+    return {"bundles": bundles}
 
 
 def profiles_from_plan(data):
@@ -2201,7 +4272,7 @@ def cmd_apply(args):
     bom_name = None
     try:
         status.set("Running")
-        bom, cfg, profiles, creds = inputs.load()
+        bom, cfg, profiles, creds, harness = inputs.load()
         bom_name = bom["metadata"]["name"]
         install = status.read().get("install", {})
         if not args.dry_run and (install.get("phase") != "Done" or install.get("bom") != bom_name):
@@ -2229,7 +4300,7 @@ def cmd_apply(args):
             # runtime user could not read /run/saw anyway).
             apply_plan(json.loads(json.dumps(plan_for_user(
                 cfg, profiles, creds, inputs.dashboard_script,
-                provider_profiles(inputs.installer)))), True)
+                provider_profiles(inputs.installer), harness))), True)
             return 0
         else:
             # A root-owned, world-readable copy the runtime user can execute.
@@ -2247,7 +4318,7 @@ def cmd_apply(args):
         _, wrap = runtime_user(cfg, args.as_current_user)
         argv = [sys.executable, str(script), "apply-profiles"]
         plan = json.dumps(plan_for_user(cfg, profiles, creds, dash_copy,
-                                        provider_profiles(inputs.installer)))
+                                        provider_profiles(inputs.installer), harness))
         result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
         if result.returncode != 0:
             raise InstallerError("applying profiles failed; see the log above")
@@ -2256,7 +4327,8 @@ def cmd_apply(args):
         if ledger_path.is_file():
             report = json.loads(ledger_path.read_text(encoding="utf-8")).get("lastPrune") or {}
         status.set("Done", bom_name, pruned=report.get("pruned"),
-                   would_prune=report.get("wouldPrune"))
+                   would_prune=report.get("wouldPrune"),
+                   extra={"appliedRevision": harness["revisions"]})
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
@@ -2273,16 +4345,30 @@ def apply_plan(data, dry_run):
     cfg = data["config"]
     profiles = profiles_from_plan(data)
     shell = Shell(dry_run=dry_run)
-    applier = ProfileApplier(shell, cfg, data["credentials"], data.get("providerProfiles"))
+    applier = ProfileApplier(shell, cfg, data["credentials"], data.get("providerProfiles"),
+                             harness_from_plan(data))
+    apply_error = None
     if not list(enabled_workspaces(profiles)):
         log("No enabled workspaces in the SAW-BOM profiles; only the gateway entry is configured")
         applier.register_gateway()
     else:
-        applier.apply(profiles)
-    setup_dashboard(shell, cfg, data["dashboardScript"], os.environ.get("HOME", "~"))
+        try:
+            applier.apply(profiles)
+        except InstallerError as exc:
+            # Partial apply still reaches verify so successful siblings are checked.
+            apply_error = exc
     if dry_run:
+        if apply_error:
+            raise apply_error
         return 0
+    if apply_error is None:
+        setup_dashboard(shell, cfg, data["dashboardScript"], os.environ.get("HOME", "~"))
+    # Also after a partial apply: the UI routes of the sandboxes that did
+    # apply keep working (a route to the failed one just does not answer).
+    setup_sandbox_ui(shell, cfg, os.environ.get("HOME", "~"))
     failures = applier.verify(profiles)
+    if apply_error:
+        raise apply_error
     if failures:
         raise InstallerError(f"verification failed: {len(failures)} problem(s)")
     return 0
@@ -2439,12 +4525,44 @@ def cmd_reconcile(args):
     return 0
 
 
+def check_bundle(directory):
+    """Validate a harness-bundles/<name>/ tree with the same rules apply uses.
+
+    Used by CI and scripts/harness-bundle.sh so a broken bundle fails once,
+    before every SAW.
+    """
+    root = Path(directory)
+    if not (root / "harness.yaml").is_file():
+        raise InstallerError(f"{root}: has no harness.yaml")
+    files = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            if path.is_symlink():
+                raise InstallerError(f"{root}: contains symbolic link {path.relative_to(root)}")
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel.rsplit("/", 1)[-1].startswith("._"):
+            continue
+        files[rel] = (path.read_bytes(), bool(path.stat().st_mode & 0o111))
+    describe_harness_tree(files, inline=False)
+    log(f"{root.name}: bundle is valid")
+
+
+def cmd_check_bundle(args):
+    check_bundle(args.directory)
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="In-guest SAW installer (Stage 1)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_validate = sub.add_parser("validate", help="check all inputs; changes nothing")
     p_validate.add_argument("--inputs", default=str(DEFAULT_INPUTS))
+
+    p_check = sub.add_parser("check-bundle",
+                             help="validate a harness-bundles/<name>/ tree; changes nothing")
+    p_check.add_argument("directory")
 
     for name, help_text in (("install", "step 1 (root): install BOM components, start the gateway"),
                             ("apply", "step 2 (root): apply SAW-BOM profiles as the runtime user"),
@@ -2473,7 +4591,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     commands = {"validate": cmd_validate, "install": cmd_install,
                 "apply": cmd_apply, "reconcile": cmd_reconcile,
-                "apply-profiles": cmd_apply_profiles}
+                "apply-profiles": cmd_apply_profiles,
+                "check-bundle": cmd_check_bundle}
     try:
         return commands[args.command](args)
     except InstallerError as exc:

@@ -129,7 +129,7 @@ WORKSPACE      ?= default
 	@echo "Prerequisites OK."
 
 .PHONY: check-prereqs keycloak-check generate-keys \
-        build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
+        build-nemoclaw build-nemoclaw-cli \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-status openshell-saw-restart openshell-saw-vm-ssh openshell-saw-ssh ssh-secret \
@@ -161,19 +161,6 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
-
-build-openclaw-openshell: build-openclaw-openshell-local ## Build the openclaw-openshell sandbox image and push to quay
-	@echo "Pushing openclaw-openshell to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openclaw-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
-
-build-openclaw-openshell-local: ## Build the openclaw-openshell sandbox image into this cluster's internal registry only (no quay push access needed)
-	-@oc delete is openclaw-openshell -n $(BUILD_NS) 2>/dev/null
-	helm upgrade --install openclaw-openshell-image $(HELM_DIR)openclaw-openshell-image \
-		--namespace $(BUILD_NS) --create-namespace
-	oc start-build openclaw-openshell -n $(BUILD_NS) --follow
-	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/openclaw-openshell:latest"
-	@echo "Point a BOM profile's sandbox image at that path and enable internalRegistry.allowAnonymousPull"
-	@echo "(see charts/openshell-saw/values.yaml) if you don't have quay push access."
 
 # --- Governance interceptor image ---
 
@@ -230,7 +217,7 @@ build-gateway-podman: ## Build Podman gateway VM image and push to quay
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 
-copy-images: ## Mirror pre-built images from quay to the internal registry
+copy-images: ## Mirror pre-built images from quay to the internal registry (tries the version tag, then latest)
 	@echo "Ensuring namespace and image registry route..."
 	@oc create namespace $(BUILD_NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null
 	@oc patch configs.imageregistry.operator.openshift.io/cluster \
@@ -336,6 +323,30 @@ keycloak: ## Deploy Keycloak + realm (uses a Keycloak already in KEYCLOAK_NS if 
 	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
 	USE_EXISTING_KEYCLOAK=$(USE_EXISTING_KEYCLOAK) $(SCRIPTS_DIR)/deploy-keycloak.sh
 
+keycloak-passwords: ## Show the Keycloak users' passwords (test users and users added with keycloak-add-users)
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) $(SCRIPTS_DIR)/keycloak-users.sh show
+
+keycloak-harden: ## For a realm imported earlier: password policy, brute-force lockout, no self-registration, generated passwords for the test users
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
+	$(SCRIPTS_DIR)/keycloak-users.sh ensure
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
+	$(SCRIPTS_DIR)/keycloak-users.sh harden
+
+USERS_FILE ?= overrides/saw-users.yaml
+KC_USER    ?=
+KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCLOAK_REALM=$(KEYCLOAK_REALM)
+
+keycloak-add-users: ## Create the Keycloak users in USERS_FILE (default overrides/saw-users.yaml) that do not exist yet, with generated passwords
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
+
+keycloak-password: ## Print a Keycloak user's password (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh password "$(KC_USER)"
+
+keycloak-reset-password: ## Give a Keycloak user a new generated password and print it (KC_USER=carol)
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
+
 keycloak-check: ## Check the Keycloak in KEYCLOAK_NS is configured for OpenShell (realm, CLI client, roles)
 	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
 	$(SCRIPTS_DIR)/keycloak-check.sh
@@ -375,7 +386,7 @@ ssh-secret: ## (Legacy) SSH key secrets in $(NS); provisioning no longer uses th
 
 # --- Sandbox ---
 
-openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, CONTAINER_RUNTIME=podman|docker)
+openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, WEB_SEARCH_API_KEY=, OWNER_SUBJECT=, CONTAINER_RUNTIME=podman|docker)
 	@NS=$(NS) SAW_NS=$(SAW_NS) KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) \
 	OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SAW_CHART=$(SAW_CHART) \
 	SANDBOX_IMAGE=$(SANDBOX_IMAGE) AGENT=$(AGENT) \
@@ -423,13 +434,27 @@ openshell-saw-list: ## List all sandboxes (every SAW namespace)
 openshell-saw-logs: .check-saw-name ## Follow the in-VM installer (serial console)
 	oc -n $(SAW_NS) logs -f -l vm.kubevirt.io/name=$(OPENSHELL_SAW_NAME) -c guest-console-log --tail=-1
 
-openshell-saw-status: .check-saw-name .check-ssh-key ## Show the in-VM installer status (over vm-ssh)
+openshell-saw-status: .check-saw-name .check-ssh-key ## Show the in-VM installer status (vm-ssh adds your SSH key to the VM first)
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh 'sudo cat /var/lib/saw/status.json'
 
 openshell-saw-vm-ssh: .check-saw-name .check-ssh-key ## Shell on the gateway VM: adds your key to its accessCredentials Secret (CMD= to run one command)
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh
+
+# --- Harness bundles (skills, MCP servers, OpenClaw tool plugins) ---
+# harness-bundles/<bundle>/ as an OCI image, mounted read-only at
+# /sandbox/harness. HARNESS_BUNDLE=ds-default HARNESS_REPO=ghcr.io/<owner>/saw-harness-ds-default
+
+HARNESS_BUNDLE ?= ds-default
+
+.PHONY: harness-bundle-build harness-bundle-push
+harness-bundle-build: ## Build harness-bundles/$(HARNESS_BUNDLE) as a local OCI image
+	@$(SCRIPTS_DIR)/harness-bundle.sh build $(HARNESS_BUNDLE)
+
+harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO) and print the harnessRef
+	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
+	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
 
 openshell-saw-restart: .check-saw-name ## Restart the VM so it applies a changed BOM/profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
@@ -511,6 +536,20 @@ openclaw-gui: .check-saw-name .check-gateway-ca ## Open OpenClaw web UI (e.g. ma
 		-L "$$GUI_PORT:127.0.0.1:18789" \
 		-N sandbox@openshell-$$SANDBOX.$(WORKSPACE)
 
+sandbox-ui: .check-saw-name .check-gateway-ca ## Print the sandbox web UI routes (ui.route in the SAW-BOM); the OpenClaw token only when the gateway still asks for it
+	@oc get route -n $(SAW_NS) -l openshell.pattern/sandbox-ui=true --no-headers \
+		-o custom-columns='HOST:.spec.host,WS:.metadata.annotations.openshell\.pattern/workspace,SB:.metadata.annotations.openshell\.pattern/sandbox' \
+		2>/dev/null | while read -r host ws sb; do \
+		frag=$$(openshell --gateway $(OPENSHELL_SAW_NAME) sandbox exec -n $$sb --workspace $$ws --no-tty -- \
+			sh -c 'cat /sandbox/.openclaw/openclaw.json' 2>/dev/null \
+			| python3 -c "import sys,json; a=json.load(sys.stdin).get('gateway',{}).get('auth',{}); print('' if a.get('mode') == 'trusted-proxy' else '#token=' + a.get('token',''))" 2>/dev/null); \
+		echo "$$sb ($$ws): https://$$host/$$frag"; \
+	done; \
+	echo "Sign in with Keycloak as $(OPENSHELL_SAW_NAME); only the workspace owner gets through."
+
+portal-vault-setup: ## Let the self-service portal write users' keys to Vault (policy + role; the imperative job does the same)
+	@scripts/portal-vault-setup.sh
+
 openshell-saw-gui: .check-saw-name ## Open web UI (alias for nemoclaw-gui)
 	@$(MAKE) nemoclaw-gui OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SANDBOX_NAME=$(SANDBOX_NAME) WORKSPACE=$(WORKSPACE) GUI_PORT=$(GUI_PORT)
 
@@ -519,7 +558,7 @@ openshell-saw-gui: .check-saw-name ## Open web UI (alias for nemoclaw-gui)
 PROFILE_NAME   ?=
 PROFILE_FILE   ?=
 
-governance-list-profiles: ## List governance provider profiles
+governance-list-profiles: ## List governance provider profiles (set OPENSHELL_SAW_NAME to target a sandbox)
 	@NS=$(SAW_NS) SAW_NAME=$(OPENSHELL_SAW_NAME) $(SCRIPTS_DIR)/governance-profile.sh list
 
 governance-add-profile: ## Enable an existing profile (PROFILE_NAME=github)
@@ -538,6 +577,9 @@ governance-demo: .check-saw-name ## Run governance interceptor demo
 
 test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
 	@$(SCRIPTS_DIR)/e2e-test.sh
+
+test-harness-e2e: ## Verify the harness bundle live (OPENSHELL_SAW_NAME=, E2E_ARGS=--revoke-drill)
+	@$(SCRIPTS_DIR)/e2e-harness.sh $(E2E_ARGS)
 
 # --- Teardown ---
 
@@ -574,4 +616,4 @@ test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
 		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
 		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
 	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
-		tests/installer tests/charts tests/scripts cli/tests/test_kube.py cli/tests/test_cli.py
+		tests/installer tests/charts tests/scripts tests/portal cli/tests/test_kube.py cli/tests/test_cli.py

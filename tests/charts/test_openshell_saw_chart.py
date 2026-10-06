@@ -345,6 +345,23 @@ def test_gateway_config_is_schema_v2_for_openshell_01(default_docs):
     assert "OPENSHELL_DRIVERS" not in env
 
 
+def test_driver_config_is_off_by_default(default_docs):
+    """Any signed-in user can attach a labelled volume to a sandbox once this
+    is on, so it defaults off; a profile with a harnessRef must opt in."""
+    _, toml = gateway_files(default_docs)
+    assert "allow_driver_config" not in toml["openshell"]["drivers"]["podman"]
+
+
+def test_gateway_allows_caller_driver_config_for_harness_mounts():
+    """0.1.x refuses --driver-config-json unless allow_driver_config is set;
+    resource admission and the bind-mount switch keep their safe defaults."""
+    _, toml = gateway_files(render("--set", "allowDriverConfig=true"))
+    podman = toml["openshell"]["drivers"]["podman"]
+    assert podman["allow_driver_config"] is True
+    assert "resource_admission" not in podman
+    assert "enable_bind_mounts" not in podman
+
+
 def test_gateway_oidc_for_users_with_roles():
     docs = render("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")
     env, toml = gateway_files(docs)
@@ -440,11 +457,13 @@ def render_bom_chart():
     return cm
 
 
-def test_saw_bom_chart_ships_profiles_only():
+def test_saw_bom_chart_ships_data_only_no_executables():
     cm = render_bom_chart()
     assert cm["metadata"]["name"] == "saw-bom-profiles"
     assert "apply_bom.py" not in cm["data"]
-    assert all(re.fullmatch(r"profiles__[^_]+(?:-[^_]+)*__[a-z0-9-]+__(workspace|providers|sandbox)\.yaml", k)
+    profile_re = r"profiles__[^_]+(?:-[^_]+)*__[a-z0-9-]+__(workspace|providers|sandbox)\.yaml"
+    harness_re = r"harness__[^_]+(?:-[^_]+)*__.+|harness-index\.yaml"
+    assert all(re.fullmatch(profile_re, k) or re.fullmatch(harness_re, k)
                for k in cm["data"]), list(cm["data"])
 
 
@@ -753,6 +772,8 @@ def test_live_inputs_use_virtiofs_and_drop_the_installer_checksum():
 def test_signing_mode_defaults_to_warn(default_docs):
     config = json.loads(installer_data(default_docs)["config.json"])
     assert config["signing"]["mode"] == "warn"
+    assert config["harness"]["cosign"]["identity"] == ""
+    assert config["harness"]["cosign"]["issuer"] == "https://token.actions.githubusercontent.com"
     assert config["prune"]["mode"] == "report"
     assert config["prune"]["sandboxes"] is False
     assert "bundle.sigstore.json" not in installer_data(default_docs)
@@ -766,3 +787,75 @@ def test_signing_mode_defaults_to_warn(default_docs):
 def test_enforce_without_trust_material_fails_at_render():
     err = render_error("--set", "signing.mode=enforce")
     assert "signing.mode enforce requires" in err
+
+
+# -- sandbox web UI routes (sandboxUi, from the SAW-BOM ui.route flag) ---------
+
+def _with_ui(tmp_path, entries, *args):
+    values = tmp_path / "ui.yaml"
+    values.write_text(yaml.safe_dump({"global": {"clusterDomain": "example.com"},
+                                      "accessControl": {"owner": "alice"}, "sandboxUi": entries}))
+    return render("-f", str(values), *args)
+
+
+UI = [{"workspace": "default", "sandbox": "notebook", "proxyPort": 4201, "forwardPort": 14201}]
+
+
+def test_a_sandbox_ui_gets_a_route_a_service_port_and_a_vm_port(tmp_path):
+    docs = _with_ui(tmp_path, UI)
+    route = docs[("Route", "saw-test-default-notebook-ui")]
+    assert route["spec"]["host"] == "saw-test-default-notebook-ui.apps.example.com"
+    assert route["spec"]["port"]["targetPort"] == "ui-4201"
+    assert route["spec"]["tls"]["termination"] == "edge"
+    service = docs[("Service", "saw-test-gateway")]
+    assert {"name": "ui-4201", "port": 4201, "targetPort": 4201, "protocol": "TCP"} in service["spec"]["ports"]
+    vm = docs[("VirtualMachine", "saw-test")]
+    ports = vm["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"][0]["ports"]
+    assert {"name": "ui-4201", "port": 4201, "protocol": "TCP"} in ports
+
+
+def test_the_installer_gets_the_route_and_the_owner(tmp_path):
+    cfg = json.loads(_with_ui(tmp_path, UI)[("ConfigMap", "saw-test-installer")]["data"]["config.json"])
+    assert cfg["sandboxUi"] == [{"workspace": "default", "sandbox": "notebook",
+                                 "name": "saw-test-default-notebook-ui",
+                                 "host": "saw-test-default-notebook-ui.apps.example.com",
+                                 "proxyPort": 4201, "forwardPort": 14201, "portName": "ui-4201"}]
+    assert cfg["sandboxUiProxy"]["allowedUsers"] == ["alice"]
+    # OpenClaw trusts the owner-only proxy: no gateway token in the UI.
+    assert cfg["sandboxUiProxy"]["trustedProxy"] == {
+        "enabled": True, "cidrs": ["127.0.0.1/32", "::1/128"], "deviceAutoApprove": True}
+
+
+def test_trusted_proxy_can_be_turned_off(tmp_path):
+    off = tmp_path / "off.yaml"
+    off.write_text(yaml.safe_dump({"sandboxUiProxy": {"trustedProxy": {"enabled": False}}}))
+    cfg = json.loads(_with_ui(tmp_path, UI, "-f", str(off))[("ConfigMap", "saw-test-installer")]
+                     ["data"]["config.json"])
+    assert cfg["sandboxUiProxy"]["trustedProxy"]["enabled"] is False
+
+
+def test_the_prepare_job_registers_the_route_callback(tmp_path):
+    docs = _with_ui(tmp_path, UI)
+    prepare = docs[("ConfigMap", "saw-test-prepare-scripts")]["data"]["prepare.sh"]
+    assert 'UI_ROUTE_HOSTS="saw-test-default-notebook-ui.apps.example.com "' in prepare
+    # A Job cannot change: it is a Sync hook, recreated on every sync.
+    job = docs[("Job", "saw-test-prepare")]
+    assert job["metadata"]["annotations"] == {"argocd.argoproj.io/hook": "Sync",
+                                              "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation"}
+
+
+def test_no_sandbox_ui_changes_nothing(tmp_path):
+    docs = render()
+    assert not [k for k in docs if k[0] == "Route" and k[1].endswith("-ui")]
+    assert not [p for p in docs[("Service", "saw-test-gateway")]["spec"]["ports"] if p["name"].startswith("ui-")]
+
+
+@pytest.mark.parametrize("entry, message", [
+    ({"workspace": "Default", "sandbox": "notebook", "proxyPort": 4201, "forwardPort": 14201}, "DNS labels"),
+    ({"workspace": "default", "sandbox": "notebook"}, "needs proxyPort and forwardPort"),
+])
+def test_bad_sandbox_ui_entries_fail_the_render(tmp_path, entry, message):
+    values = tmp_path / "ui.yaml"
+    values.write_text(yaml.safe_dump({"sandboxUi": [entry]}))
+    result = helm_template(CHART, "--set", "sandboxName=saw-test", "-f", str(values))
+    assert result.returncode != 0 and message in result.stderr

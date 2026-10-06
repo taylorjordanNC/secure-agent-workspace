@@ -110,6 +110,14 @@ signing:
   identity: ""
   issuer: ""
 
+# Cosign check for harnessRef.image (keyless, same OIDC identity as
+# .github/workflows/harness-bundles.yml). Empty identity/issuer refuses
+# image-sourced harnesses. Inline ConfigMap bundles skip this.
+harness:
+  cosign:
+    identity: ""
+    issuer: "https://token.actions.githubusercontent.com"
+
 # Dropping an object from a SAW-BOM profile. report only logs what would be
 # deleted. on deletes it. Sandboxes are kept unless sandboxes is true, because
 # they hold user work. This is not pruneOnRemove (that deletes a user's VM).
@@ -167,6 +175,30 @@ route:
   # Computed from global.clusterDomain when empty.
   dashboardHost: ""
 
+# Sandbox web UIs (OpenClaw / NemoClaw control UI) on their own routes. The
+# saw-users chart fills the list from the user's SAW-BOM profiles (sandboxes
+# with ui.route: true): [{workspace, sandbox, proxyPort, forwardPort}]. For
+# each, the VM runs `openshell forward service` from forwardPort to the
+# sandbox's targetPort and an oauth2-proxy on proxyPort (Keycloak, client
+# dashboard.clientId), and the route <vm>-<workspace>-<sandbox>-ui sends to
+# that proxy. Only the owner (accessControl.owner, matched against the
+# Keycloak preferred_username) and allowedUsers get through. The ports are
+# VM interface ports, so changing the list takes a VM restart.
+sandboxUi: []
+sandboxUiProxy:
+  targetPort: 18789
+  allowedUsers: []
+  # OpenClaw's trusted-proxy auth: the sandbox's gateway takes the user from
+  # the oauth2-proxy's X-Forwarded-User (allowed: the same users) instead of
+  # asking for its gateway token, and approves their UI devices. Only
+  # requests from `cidrs` are trusted; the forward arrives over loopback.
+  # The CLI and TUI in the sandbox use the gateway secret as a password.
+  # Off: the UI asks for the token (make sandbox-ui prints it).
+  trustedProxy:
+    enabled: true
+    cidrs: ["127.0.0.1/32", "::1/128"]
+    deviceAutoApprove: true
+
 # OpenShell Dashboard + oauth2-proxy, run inside the VM by the installer.
 # Needs oidc.issuerUrl (or global.clusterDomain) and a known webui host.
 dashboard:
@@ -180,6 +212,19 @@ dashboard:
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
+# A sandbox with a SAW-BOM harnessRef mounts its harness volume through
+# caller driver config (`sandbox create --driver-config-json`), which
+# OpenShell 0.1.x refuses unless the gateway sets allow_driver_config. The
+# gateway keeps resource admission on and bind mounts off, so a caller can
+# only attach a podman volume labelled openshell.ai/sandbox-attachable for
+# its own workspace (the installer labels each harness volume that way);
+# image and host-path mounts stay refused. Default off: turning it on lets
+# any signed-in user attach a labelled volume to a sandbox they create, so
+# set true only when a selected profile has a sandbox with a harnessRef
+# (e.g. saw-bom's harnessEnabled). The installer fails fast with a clear error
+# if a harnessRef is applied while this is off.
+allowDriverConfig: false
+
 governance:
   enabled: true
   # Shared namespace where the governance-interceptor chart runs. SAWs live in
