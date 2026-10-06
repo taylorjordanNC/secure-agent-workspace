@@ -17,7 +17,7 @@ asciidoc:
     saw_gateway_name: 'openshell-saw'
     saw_workspace: 'cuda-dev'
     saw_sandbox: 'cuda-sandbox'
-    openshell_version: '0.0.103'
+    openshell_version: '0.1.2-rhaiv.0'
     openshell_saw_version: '0.1.2-rhaiv.0'
     openshell_cli_image: 'quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b'
     ocp_version: '4.22'

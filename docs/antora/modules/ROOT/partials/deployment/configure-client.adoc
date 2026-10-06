@@ -11,9 +11,9 @@ test "$(openshell --version | awk '{print $NF}')" = "{openshell_saw_version}"
 ----
 
 The VM must report `{openshell_saw_version}` and the control node must also
-report `{openshell_saw_version}`. This check uses the SAW-track container CLI
-(see the install instructions for the PATH wrapper script that maps `openshell` to
-the container) — not the raw-track `{openshell_version}` tarball client.
+report `{openshell_saw_version}`. This check uses the container CLI (see the
+install instructions for the PATH wrapper script that maps `openshell` to the
+container) — the one OpenShell CLI used by the whole workshop.
 
 For a workstation with a browser, use the browser OIDC flow:
 

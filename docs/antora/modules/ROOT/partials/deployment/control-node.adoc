@@ -9,8 +9,7 @@ Install these tools on the control node:
 * `oc` and `kubectl` matching the OpenShift cluster
 * Helm 3, Podman 4.3 or later, `virtctl`, Git, GNU Make, and `jq`
 * `curl`, OpenSSL, Python 3 with PyYAML, SSH, and `lsof`
-* Raw-track OpenShell exactly `{openshell_version}` (tarball, modules 1-2)
-* SAW-track OpenShell CLI container `{openshell_saw_version}` (modules 3+)
+* OpenShell CLI container `{openshell_saw_version}` (all modules)
 
 Obtain `oc` and `virtctl` from the OpenShift console client downloads so their
 versions match the cluster. On macOS, start the Podman machine before deploying:
@@ -21,29 +20,8 @@ podman machine init 2>/dev/null || true
 podman machine start
 ----
 
-Install the pinned OpenShell client in a stable directory. This Linux x86_64
-example uses the release artifact directly:
-
-[source,bash,role="execute",subs="attributes+"]
-----
-mkdir -p "$HOME/openshell-cli"
-curl -fsSL -o /tmp/openshell.tar.gz \
-  https://github.com/NVIDIA/OpenShell/releases/download/v{openshell_version}/openshell-x86_64-unknown-linux-musl.tar.gz
-tar xzf /tmp/openshell.tar.gz -C "$HOME/openshell-cli"
-chmod 0755 "$HOME/openshell-cli/openshell"
-export PATH="$HOME/openshell-cli:$PATH"
-hash -r
-----
-
-Use the Linux ARM64 or Apple Darwin archive from the same release when
-appropriate. Persist the `PATH` change in the control node's shell profile.
-
-This raw-track tarball client (`{openshell_version}`) is the client for modules
-1 and 2, which work directly against the raw upstream OpenShell story. The
-Secure Agent Workspace track uses a different, containerized client.
-
-Install the SAW-track OpenShell CLI from its verified container image. The
-image ENTRYPOINT is the CLI, its `HOME` is `/`, so the config mount target is
+Install the OpenShell CLI from its verified container image. The image
+ENTRYPOINT is the CLI, its `HOME` is `/`, so the config mount target is
 `/.config/openshell` (not `/root/.config`):
 
 [source,bash,role="execute",subs="attributes+"]
@@ -53,10 +31,10 @@ podman run --rm --platform linux/amd64 \
   {openshell_cli_image} --version
 ----
 
-To make `openshell` resolve to the container CLI while working the SAW
-modules — including the exercises' `make` targets, whose recipe shells are
-non-interactive `/bin/sh` and do not expand aliases — write a PATH wrapper
-instead of a shell alias:
+To make `openshell` resolve to the container CLI in every module — including
+the exercises' `make` targets, whose recipe shells are non-interactive
+`/bin/sh` and do not expand aliases — write a PATH wrapper instead of a shell
+alias:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
@@ -73,10 +51,7 @@ chmod 0755 "$HOME/.local/bin/openshell"
 
 Ensure `~/.local/bin` is on `PATH` (add `export PATH="$HOME/.local/bin:$PATH"`
 to your shell profile if it is not). A wrapper works in both interactive
-shells and `make` recipe shells. The `~/.local/bin` wrapper takes precedence
-over `$HOME/openshell-cli` on the `PATH`; drop `$HOME/openshell-cli` from your
-`PATH` when working the SAW modules so the `{openshell_saw_version}` client is
-always selected.
+shells and `make` recipe shells.
 
 Verify every dependency before continuing:
 
@@ -87,14 +62,10 @@ oc version --client
 helm version --short
 podman --version
 virtctl version --client
-"$HOME/openshell-cli/openshell" --version   # raw track: expect {openshell_version}
-podman run --rm --platform linux/amd64 -v "$HOME/.config/openshell:/.config/openshell" \
-  {openshell_cli_image} --version   # SAW track: expect {openshell_saw_version}
+openshell --version   # expect {openshell_saw_version}
 ----
 
-Repeat the OpenShell version checks in each new terminal used by the
-exercises. Do not mix the two clients: the raw-track tarball is
-`{openshell_version}` for modules 1-2, and the RHAIV container is
-`{openshell_saw_version}` for modules 3 onward. A client whose version does
-not match the gateway build it talks to can silently stall during the login
-handshake.
+Repeat the OpenShell version check in each new terminal used by the
+exercises. The container CLI is `{openshell_saw_version}` for all modules, and
+it matches the RHAIV gateway build it talks to — a client whose version does
+not match the gateway build can silently stall during the login handshake.
