@@ -1,16 +1,12 @@
 Mirror the four prebuilt quickstart images into the internal registry:
 
-[source,bash,role="execute",subs="attributes+"]
+[source,bash,role="execute"]
 ----
 make copy-images
-oc -n {saw_namespace} get istag/openshell-gateway:{openshell_version}
-oc -n {saw_namespace} get istag/openshell-gateway-docker:{openshell_version}
-oc -n {saw_namespace} get istag/nemoclaw-sandbox:{openshell_version}
-oc -n {saw_namespace} get istag/nemoclaw-cli:{openshell_version}
 ----
 
-The explicit ImageStreamTag checks are required because the current mirror
-target can continue after an individual source-image failure. The target
+Review the mirror output before continuing: the target can continue after an
+individual source-image failure, so check its log for errors. The target
 mirrors the Docker and Podman gateway images, the NemoClaw sandbox, and the
 NemoClaw CLI. Current BOM profiles still contain external NemoClaw and OpenClaw
 image references, so retain registry egress unless a reviewed deployment fork
@@ -72,4 +68,17 @@ completion; software emulation can take up to 90 minutes:
 ----
 oc wait --for=condition=complete job/{saw_gateway_name}-setup \
   -n {saw_namespace} --timeout=5400s
+----
+
+Once the VM is running, verify the guest gateway version. There are no
+ImageStreamTags in this namespace to check — the VM itself is the source of
+truth for the SAW gateway version:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get vmi -n {saw_namespace}
+virtctl -n {saw_namespace} ssh cloud-user@vm/{saw_gateway_name} \
+  --identity-file="$HOME/.generated-ssh-keys/sandbox-ssh" \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  --command "openshell-gateway --version"   # expect {openshell_saw_version}
 ----

@@ -7,11 +7,13 @@ virtctl -n {saw_namespace} ssh cloud-user@vm/$OPENSHELL_SAW_NAME \
   --identity-file="$HOME/.generated-ssh-keys/sandbox-ssh" \
   --local-ssh-opts="-o StrictHostKeyChecking=no" \
   --command "openshell-gateway --version"
-test "$(openshell --version | awk '{print $NF}')" = "{openshell_version}"
+test "$(openshell --version | awk '{print $NF}')" = "{openshell_saw_version}"
 ----
 
-The VM must report `{openshell_saw_version}` and the control node must report
-`{openshell_version}`.
+The VM must report `{openshell_saw_version}` and the control node must also
+report `{openshell_saw_version}`. This check uses the SAW-track container CLI
+(see the install instructions for the PATH wrapper script that maps `openshell` to
+the container) — not the raw-track `{openshell_version}` tarball client.
 
 For a workstation with a browser, use the browser OIDC flow:
 

@@ -222,14 +222,15 @@ pulling the broken mutable `:dev` supervisor image.
 
 ## Configure OIDC and the CLI
 
-> **Pin the client to `0.0.103` — this applies to every command in this guide.**
-> Each `openshell` call here, *including the ones run inside `make` targets*
-> (`make login`, `make *-configure-gateway`, `make governance-*`,
-> `make nemoclaw-tui`, etc.), uses whichever `openshell` is first on your `PATH`.
-> The gateway is pinned to `0.0.103-rhaiv.0`, and a newer client (for example the
-> Homebrew build, currently `0.0.116`) can silently stall during the login
-> handshake. Keep `openshell` resolving to `0.0.103` for all work, or results will
-> drift as the Homebrew formula updates.
+> **Pin the client to the SAW-track container CLI (`0.1.2-rhaiv.0`) — this applies
+> to every command in this guide.** Each `openshell` call here, *including the
+> ones run inside `make` targets* (`make login`, `make *-configure-gateway`,
+> `make governance-*`, `make nemoclaw-tui`, etc.), uses whichever `openshell` is
+> first on your `PATH`. The gateway is pinned to `0.1.2-rhaiv.0`, and a client
+> whose version does not match it (for example the older `0.0.103` tarball or the
+> Homebrew build) can silently stall during the login handshake. Install the
+> container CLI below and make `openshell` resolve to it durably for all SAW
+> work, or results will drift.
 
 Confirm the in-VM gateway version:
 
@@ -237,44 +238,60 @@ Confirm the in-VM gateway version:
 virtctl -n openshell-agents ssh cloud-user@vm/openshell-saw \
   --identity-file="$HOME/.generated-ssh-keys/sandbox-ssh" \
   --local-ssh-opts="-o StrictHostKeyChecking=no" \
-  --command "openshell-gateway --version"     # expect 0.0.103-rhaiv.0
+  --command "openshell-gateway --version"     # expect 0.1.2-rhaiv.0
 ```
 
-Install the matching client to a stable location (Apple Silicon shown; on Linux
-use `openshell-x86_64-unknown-linux-musl.tar.gz` or
-`openshell-aarch64-unknown-linux-musl.tar.gz` from the same release):
+Install the SAW-track OpenShell CLI from its verified container image
+(`quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b`,
+single-platform amd64 digest). The image ENTRYPOINT is the CLI and its `HOME` is
+`/`, so the config mount target is `/.config/openshell` (not `/root/.config`).
+The `--platform linux/amd64` flag matters on Apple Silicon hosts:
 
 ```bash
-mkdir -p ~/openshell-cli
-cd ~/openshell-cli
-curl -sSL -o openshell.tar.gz \
-  https://github.com/NVIDIA/OpenShell/releases/download/v0.0.103/openshell-aarch64-apple-darwin.tar.gz
-tar xzf openshell.tar.gz
-xattr -d com.apple.quarantine ./openshell 2>/dev/null || true
+podman run --rm --platform linux/amd64 \
+  -v "$HOME/.config/openshell:/.config/openshell" \
+  quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b \
+  --version    # -> openshell 0.1.2-rhaiv.0
 ```
 
-Make it the default `openshell` **durably** so new terminals (and next week) still
-use it. Prepending to `PATH` in your shell rc wins over `/opt/homebrew/bin`:
+Make `openshell` resolve to the container CLI **durably** so new terminals —
+and the `make` targets used throughout this guide, whose recipe shells are
+non-interactive `/bin/sh` and do not expand aliases — still use it. Write a
+small PATH wrapper instead of an alias:
 
 ```bash
-echo 'export PATH="$HOME/openshell-cli:$PATH"' >> ~/.zshrc   # or ~/.bashrc
-export PATH="$HOME/openshell-cli:$PATH"                       # apply to this shell now
-hash -r                                                       # forget any cached path
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/openshell" <<'EOF'
+#!/bin/bash
+exec podman run --rm --platform linux/amd64 \
+  -v "$HOME/.config/openshell:/.config/openshell" \
+  quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b \
+  "$@"
+EOF
+chmod 0755 "$HOME/.local/bin/openshell"
 ```
+
+Ensure `~/.local/bin` is on `PATH` (add `export PATH="$HOME/.local/bin:$PATH"`
+to your shell profile if it is not). A wrapper works in both interactive
+shells and `make` recipe shells.
 
 **Verify before you rely on it — do this in each shell/session you test from:**
 
 ```bash
-which openshell        # -> $HOME/openshell-cli/openshell  (NOT /opt/homebrew/bin/openshell)
-openshell --version    # -> openshell 0.0.103
+type openshell      # -> the wrapper script (NOT a Homebrew or other tarball binary)
+openshell --version # -> openshell 0.1.2-rhaiv.0
 ```
 
-If `which openshell` still shows the Homebrew path, your rc did not load in this
-shell (open a new terminal or re-run the `export`/`hash -r` lines). To remove the
-ambiguity entirely you may instead `brew uninstall openshell`, or pin explicitly
-per command with the full path `~/openshell-cli/openshell ...`. Do **not** mix
-versions within a session — in particular, always run `gateway login` / `gateway
-add` with the `0.0.103` client.
+If `type openshell` does not show the wrapper, `~/.local/bin` is missing from
+this shell's `PATH` (open a new terminal or re-source the profile). The
+`~/.local/bin` wrapper takes precedence over `$HOME/openshell-cli` on the
+`PATH`; drop `$HOME/openshell-cli` from your `PATH` when working the SAW
+modules so the `0.1.2-rhaiv.0` client is always selected. The
+raw-track tarball client (`0.0.103`) — installed for modules 1-2 against the
+raw upstream story, via its own `$HOME/openshell-cli` prefix on `PATH` — must
+not be used with this gateway. Do **not** mix the two clients within a session:
+in particular, always run `gateway login` / `gateway add` with the
+`0.1.2-rhaiv.0` container CLI.
 
 Log in with the fork's OIDC helper. Browser flow is suitable for a laptop:
 
@@ -303,8 +320,8 @@ URL printed by the browser against the bastion before it expires.
 ## Validate
 
 > Every `openshell` command below (and in the Governance section) uses the client
-> on your `PATH`. Before testing, confirm it is the pinned `0.0.103`:
-> `which openshell && openshell --version` — see
+> on your `PATH`. Before testing, confirm it is the SAW-track container CLI
+> (`0.1.2-rhaiv.0`): `type openshell && openshell --version` — see
 > [Configure OIDC and the CLI](#configure-oidc-and-the-cli) if it is not.
 
 First check that the gateway is reachable and the BOM was applied:

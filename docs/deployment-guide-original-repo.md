@@ -348,7 +348,11 @@ So a healthy deploy comes up with exactly two sandboxes: **`default/notebook`** 
 
 ### Step 1: Install a version-matched CLI client
 
-The in-VM gateway is pinned to `0.0.103-rhaiv.0`; install the **matching** upstream client. A newer client (e.g. Homebrew's latest) can silently stall on the login handshake.
+The in-VM gateway comes from the same shared `openshell-saw` chart that serves
+the GitOps cluster, so it is pinned to **`0.1.2-rhaiv.0`**. Install the
+matching container CLI — a client whose version does not match the gateway
+(for example the older `0.0.103` tarball or Homebrew's latest) can silently
+stall on the login handshake.
 
 First confirm the gateway's version from whichever machine has `virtctl` + the SSH key:
 
@@ -356,23 +360,49 @@ First confirm the gateway's version from whichever machine has `virtctl` + the S
 virtctl -n openshell-agents ssh cloud-user@vm/openshell-saw \
   --identity-file=$HOME/.generated-ssh-keys/sandbox-ssh \
   --local-ssh-opts="-o StrictHostKeyChecking=no" \
-  --command "openshell-gateway --version"        # -> openshell-gateway 0.0.103-rhaiv.0
+  --command "openshell-gateway --version"        # expect 0.1.2-rhaiv.0
 ```
 
-Then download and use the matching client:
+Then install the SAW-track OpenShell CLI from its verified container image
+(`quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b`,
+single-platform amd64 digest). The image ENTRYPOINT is the CLI and its `HOME`
+is `/`, so the config mount target is `/.config/openshell` (not
+`/root/.config`). The `--platform linux/amd64` flag matters on Apple Silicon
+hosts:
 
 ```bash
-# macOS (Apple Silicon):
-mkdir -p ~/openshell-cli && cd ~/openshell-cli
-curl -sSL -o openshell.tar.gz \
-  https://github.com/NVIDIA/OpenShell/releases/download/v0.0.103/openshell-aarch64-apple-darwin.tar.gz
-tar xzf openshell.tar.gz
-xattr -d com.apple.quarantine ./openshell 2>/dev/null || true
-export PATH="$HOME/openshell-cli:$PATH"
-./openshell --version                            # -> openshell 0.0.103
+podman run --rm --platform linux/amd64 \
+  -v "$HOME/.config/openshell:/.config/openshell" \
+  quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b \
+  --version    # -> openshell 0.1.2-rhaiv.0
+```
 
-# Linux x86_64:  openshell-x86_64-unknown-linux-musl.tar.gz
-# Linux aarch64: openshell-aarch64-unknown-linux-musl.tar.gz
+Make `openshell` resolve to the container CLI durably so new terminals (and
+the `make` targets used later in this guide, whose recipe shells do not expand
+aliases) still use it. Write a small PATH wrapper instead of an alias:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/openshell" <<'EOF'
+#!/bin/bash
+exec podman run --rm --platform linux/amd64 \
+  -v "$HOME/.config/openshell:/.config/openshell" \
+  quay.io/opendatahub/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b \
+  "$@"
+EOF
+chmod 0755 "$HOME/.local/bin/openshell"
+```
+
+Ensure `~/.local/bin` is on `PATH` (add `export PATH="$HOME/.local/bin:$PATH"`
+to your shell profile if it is not). If you also have a raw tarball install at
+`$HOME/openshell-cli`, the `~/.local/bin` wrapper takes precedence on the
+`PATH`; drop `$HOME/openshell-cli` from your `PATH` when working the SAW
+modules so the `0.1.2-rhaiv.0` client is always selected. And verify in every
+shell you test from:
+
+```bash
+type openshell       # -> the wrapper script (NOT a Homebrew or tarball binary)
+openshell --version  # -> openshell 0.1.2-rhaiv.0
 ```
 
 ### Step 2: Register the gateway (OIDC mode) and authenticate
@@ -384,13 +414,13 @@ GW_HOST=$(oc get route openshell-saw-gateway -n openshell-agents -o jsonpath='{.
 KC_HOST=$(oc get route -n openshell-agents -o jsonpath='{range .items[*]}{.spec.host}{"\n"}{end}' | grep keycloak | head -1)
 echo "gateway=$GW_HOST" ; echo "keycloak=$KC_HOST"
 
-./openshell gateway add https://$GW_HOST:443 \
+openshell gateway add https://$GW_HOST:443 \
   --name openshell-saw \
   --oidc-issuer https://$KC_HOST/realms/openshell \
   --oidc-client-id openshell-cli \
   --gateway-insecure
 
-./openshell gateway select openshell-saw
+openshell gateway select openshell-saw
 ```
 
 > **Why `--oidc-issuer` (and not a bare `https://` add).** A bare `https://…` endpoint makes `openshell gateway add` treat the gateway as an **"edge-authenticated (cloud) gateway"** and open a gateway-hosted `/auth/connect?...` page that **spins forever** ("OpenShell — Authenticating…", auto-refreshing every 2s) — this gateway is a plain **OIDC+mTLS** gateway, not an edge proxy, so it never redirects you to Keycloak (Keycloak logs stay silent; the gateway logs only repeated `GET /auth/connect → 200`). `--oidc-issuer` drives the standard Keycloak authorization-code+PKCE login with a `http://localhost:<port>` redirect (which *is* in the `openshell-cli` client allowlist). mTLS here is *requested but not required* at the TLS layer — the OIDC token authorizes the call — so no client cert needs pre-provisioning.
@@ -418,7 +448,7 @@ echo "gateway=$GW_HOST" ; echo "keycloak=$KC_HOST"
 ### Step 3: Verify connectivity
 
 ```bash
-./openshell --gateway-insecure sandbox list
+openshell --gateway-insecure sandbox list
 ```
 
 A successful upstream deploy creates `default/notebook` and
