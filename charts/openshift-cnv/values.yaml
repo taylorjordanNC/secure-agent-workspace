@@ -1,6 +1,0 @@
-# Software emulation for VMs on hosts without nested virtualization (AWS,
-# RHDP workshop fleets). Set to false on KVM-capable clusters to avoid the
-# slower software-emulation path. Declarative here so the VMs never wait on
-# an imperative annotate step — the operator reconciles this as soon as the
-# subscription lands.
-softwareEmulation: false
