@@ -18,7 +18,24 @@ process:
 # capstone fleet — per-agent sandbox policies pick subsets of these (the
 # `metrics` agent gets only the Thanos querier, `traces` only the MLflow
 # server, `analyst` none), and the deny-by-default posture is preserved.
+# ngc-inference vends the LLM egress: the nemoclaw plugin dials the provider
+# type's default host (build.nvidia.com) and ignores a re-pointed endpoint
+# config, so the ceiling must name the host the agents actually call.
 network_policies:
+  ngc-inference:
+    name: ngc-inference
+    endpoints:
+      - host: build.nvidia.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
+      - path: /usr/bin/node
+      - path: /usr/bin/node-*
+      - path: /usr/local/bin/node
   in-cluster-registry:
     name: in-cluster-registry
     endpoints:

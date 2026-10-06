@@ -7,5 +7,12 @@ spec:
       type: nvidia
       nemoclawProvider: build
       model: nvidia/nemotron-3-super-120b-a12b
+      # build.nvidia.com is the endpoint the nemoclaw plugin actually calls
+      # (the plugin registers the provider type's default and ignores a
+      # re-pointed endpoint config) — and the host the sandbox's auto-granted
+      # _provider_nvidia policy must name. Inference works on both NGC hosts;
+      # integrate.api.nvidia.com is the canonical one but the plugin never
+      # dials it.
+      baseUrl: https://build.nvidia.com/v1
       credentialSecret: inference
       credentialSecretKey: api_key
