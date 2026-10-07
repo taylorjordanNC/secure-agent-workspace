@@ -31,6 +31,7 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
   - [Technical details](#technical-details)
     - [Security model](#security-model)
     - [Keycloak test users](#keycloak-test-users)
+    - [Web UI sign-in (redirect URIs)](#web-ui-sign-in-redirect-uris)
     - [Namespace modes](#namespace-modes)
     - [OIDC issuer resolution](#oidc-issuer-resolution)
   - [Tags](#tags)
@@ -200,7 +201,7 @@ make copy-images
 ./pattern.sh make install
 
 # 7. Authenticate and configure the CLI
-make login                    # Opens browser → login with alice / alice
+make login                    # Opens browser → alice; password: make keycloak-passwords
 export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
 make openshell-saw-configure-gateway
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
@@ -261,7 +262,7 @@ helm upgrade --install governance-interceptor charts/governance-interceptor \
   --namespace openshell-agents
 
 # 10. Authenticate
-make login                    # Opens browser → login with alice / alice
+make login                    # Opens browser → alice; password: make keycloak-passwords
 make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
@@ -295,7 +296,7 @@ make openshell-saw-status
 # Wait for "install" and "apply" to show "phase": "Done"
 
 # 15. Configure the openshell CLI: registers the gateway and signs you in
-#     through the browser (log in as alice / alice).
+#     through the browser (log in as alice; password: make keycloak-passwords).
 make openshell-saw-configure-gateway
 #     openshell gateway login $OPENSHELL_SAW_NAME
 #     Only needed when a device-code sign-in (OPENSHELL_NO_BROWSER=1) did not
@@ -328,7 +329,7 @@ make openclaw-gui # OpenClaw
 
 > **Shell in a sandbox:** `openshell sandbox connect` attaches to the sandbox's main process, which in SAW sandboxes is `sleep infinity` with no terminal, so it shows nothing. Open a shell with `openshell sandbox exec -n notebook -- sh` (use `--workspace cuda-dev` for `cuda-sandbox`). See [Shell access](docs/deployment-guide.md#shell-access).
 
-> **Agent UI:** `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI. The `<name>-dashboard` Route does not reach it on OpenShell 0.1.x; see [OpenClaw UI and the dashboard Route](docs/deployment-guide.md#openclaw-ui-and-the-dashboard-route). Web search and web fetch do not work in the default `notebook` sandbox; see [Web search in the default sandbox](docs/deployment-guide.md#web-search-in-the-default-sandbox).
+> **Agent UI:** `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI. The `<name>-dashboard` Route does not reach it on OpenShell 0.1.x; the pattern path (Option A) gives each sandbox with a UI its own signed-in Route instead. See [OpenClaw UI and the dashboard Route](docs/deployment-guide.md#openclaw-ui-and-the-dashboard-route). Web search and web fetch do not work in the default `notebook` sandbox; see [Web search in the default sandbox](docs/deployment-guide.md#web-search-in-the-default-sandbox).
 
 You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `alice` in `saw-alice`).
 
@@ -375,6 +376,10 @@ Notes:
 - Self-hosted models can be slow; the profile sets a 300-second inference timeout.
 
 Details: [docs/custom-inference.md](docs/custom-inference.md).
+
+### Self-service workspaces and sandbox web UIs
+
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 
@@ -501,12 +506,95 @@ The system implements layered isolation:
 
 ### Keycloak test users
 
-| Username | Password | Roles |
-|---|---|---|
-| `developer` | `developer` | `openshell-user` |
-| `admin` | `admin` | `openshell-user`, `openshell-admin` |
-| `alice` | `alice` | `openshell-user`, `openshell-admin` |
-| `bob` | `bob` | `openshell-user`, `openshell-admin` |
+| Username | Roles |
+|---|---|
+| `developer` | `openshell-user` |
+| `admin` | `openshell-user`, `openshell-admin` |
+| `alice` | `openshell-user`, `openshell-admin` |
+| `bob` | `openshell-user`, `openshell-admin` |
+
+There are no default passwords. Each user gets a random one (20+
+characters with upper and lower case, digits and symbols), kept in Secret
+`openshell-keycloak-user-passwords` in the Keycloak namespace: from Vault in
+the Validated Pattern (`keycloak-users` in `values-secret.yaml.template`,
+generated by `load-secrets`), or generated by `make keycloak`. Show them with
+`make -f Makefile-quickstart keycloak-passwords`.
+
+Self-registration is off: an admin adds users from `overrides/saw-users.yaml`
+(the same list that creates their workspaces). Each name not in the realm
+yet gets an account with a generated password; users that exist are left
+alone, so running it again is safe. Optional per entry: `email`,
+`firstName`, `lastName`, `roles` (default `[openshell-user]`). Another file:
+`USERS_FILE=<file>`.
+
+```bash
+make -f Makefile-quickstart keycloak-add-users                      # prints the new passwords
+make -f Makefile-quickstart keycloak-password KC_USER=carol         # print carol's password
+make -f Makefile-quickstart keycloak-reset-password KC_USER=carol   # new password, printed
+```
+
+Passwords set this way are kept in Secret `openshell-keycloak-users`;
+`keycloak-passwords` lists everyone's.
+
+The realm requires strong passwords for anything users set themselves
+(`keycloak.passwordPolicy`: 14+ characters, upper, lower, digit, special,
+not the user name or email, not one of the last 5), and locks an account out
+for a growing time after 5 failed sign-ins (`keycloak.bruteForce`). A realm
+imported before this kept its old settings and passwords (an import never
+changes an existing realm): run `make -f Makefile-quickstart keycloak-harden`
+once to apply them, turn registration off, and set the generated passwords.
+
+### Web UI sign-in (redirect URIs)
+
+Each workspace's web UIs (the VM's OpenShell dashboard, and each sandbox UI
+route) sign in through Keycloak's `openshell-dashboard` client, and Keycloak
+only sends the browser back to a redirect URI registered on that client. Every
+UI has its own host, and Keycloak takes no wildcard in a host name, so each
+one is registered.
+
+By default the **redirect registrar** does it: one Deployment in Keycloak's
+namespace (`charts/openshell-keycloak`, `redirectRegistrar`) registers each
+web UI route's `https://<host>/oauth2/callback` within about 15 seconds of
+the route appearing (from `overrides/saw-users.yaml` or the self-service
+portal), and removes the entries of workspaces that are gone. It signs in as
+its own Keycloak client that may only manage the OpenShell realm's clients;
+its init container uses the Keycloak admin Secret once per start to set that
+client up, and the registrar itself never sees it.
+
+To keep Keycloak admin access out of the cluster entirely, turn it off
+(`redirectRegistrar.enabled: false` in the `openshell-keycloak` values) and
+register as an administrator instead, with your own `oc` session. The same
+targets work alongside the registrar too:
+
+```bash
+make -f Makefile-quickstart keycloak-register KC_USER=carol   # account (if new) + carol's web UIs
+make -f Makefile-quickstart keycloak-redirects                # what is registered, what is missing
+make -f Makefile-quickstart keycloak-redirects-sync           # all workspaces; drops deleted ones
+```
+
+`keycloak-register` creates the Keycloak account if it does not exist yet
+(generated password, printed, as with `keycloak-add-users`), then adds
+`https://<host>/oauth2/callback` for each of the user's web UI routes,
+waiting up to `REDIRECT_WAIT` seconds (default 600) for Argo CD to create
+them. Until then, signing in to that workspace's UIs fails with Keycloak's
+"Invalid parameter: redirect_uri". `keycloak-redirects-sync` adds whatever is
+missing and removes the entries it added for workspaces that are gone;
+entries it did not add (registered by hand, other apps) are kept.
+
+The registrar and `keycloak-redirects-sync` apply the same rules.
+
+The web UI routes are the ones labelled `saw.redhat.com/oidc-redirect=true` in
+the `saw-*` namespaces. With another OIDC issuer, register their callbacks
+there instead; this lists them:
+
+```bash
+oc get routes -A -l saw.redhat.com/oidc-redirect=true \
+  -o jsonpath='{range .items[*]}https://{.spec.host}/oauth2/callback{"\n"}{end}'
+```
+
+The scripts verify Keycloak's certificate; for a router certificate signed by
+a private CA, set `KEYCLOAK_CA=<ca-bundle.pem>`. For a Keycloak CR not named
+`openshell-keycloak`, set `KEYCLOAK_NAME`.
 
 ### Namespaces
 
