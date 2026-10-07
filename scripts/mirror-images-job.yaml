@@ -10,7 +10,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: mirror
-        image: registry.redhat.io/ubi8/skopeo:latest
+        image: registry.redhat.io/ubi8/skopeo@sha256:202bc39651750c071bb5d68dd419f6e1c34d89a16194131af7c6c3f359c82b38
         env:
         - name: HOME
           value: /tmp/skopeo-home
@@ -39,10 +39,11 @@ spec:
             --dest-creds="unused:${TOKEN}" \
             "docker://${QUAY_REPO}/${IMAGE}:${SRC}" \
             "docker://image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/${IMAGE}:${WANTED}"
-          # Also tag as :latest — the golden-image DV import
-          # (bootstrap-golden-image.sh) pulls :latest from the internal
-          # registry, and a missing tag deadlocks the DV import in
-          # ImagePullBackOff. Done in-job because the order chart applies
+          # Also tag as :latest — a convenience default tag for manual
+          # `oc tag`-free pulls. The golden-image DV import
+          # (bootstrap-golden-image.sh) now pulls the pinned :0.0.103 tag,
+          # so :latest is no longer required by the DV import itself.
+          # Done in-job because the order chart applies
           # this Job directly (GitOps) and no script runs to `oc tag`.
           skopeo copy --src-tls-verify=false --dest-tls-verify=false \
             --src-creds="unused:${TOKEN}" \

@@ -4,7 +4,7 @@
 #          VM_NAME, NS
 
 if [[ -z "${GOLDEN_IMAGE_URL}" ]]; then
-  GOLDEN_IMAGE_URL="docker://image-registry.openshift-image-registry.svc:5000/${GOLDEN_NS}/${GOLDEN_DS}:latest"
+  GOLDEN_IMAGE_URL="docker://image-registry.openshift-image-registry.svc:5000/${GOLDEN_NS}/${GOLDEN_DS}:0.0.103"
 fi
 
 if [[ -n "${GOLDEN_DS}" ]]; then
