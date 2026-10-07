@@ -69,3 +69,28 @@ network_policies:
       - path: /usr/bin/curl
       - path: /usr/bin/node
       - path: /usr/local/bin/node
+
+  # On-cluster Mailpit email sink (charts/mailpit, openshell-agents ns): the
+  # provider profile (profiles/mailpit.yaml) allows it, but like every other
+  # in-cluster service (registry, telemetry-proxy) it must ALSO be named here
+  # — the interceptor only signs network access it governs, so a sandbox
+  # policy cannot grant an in-cluster host the ceiling doesn't declare.
+  mailpit:
+    name: mailpit
+    endpoints:
+      - host: mailpit.openshell-agents.svc.cluster.local
+        port: 1025
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: mailpit.openshell-agents.svc.cluster.local
+        port: 8025
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
+      - path: /usr/bin/node
+      - path: /usr/bin/node-*
+      - path: /usr/local/bin/node
