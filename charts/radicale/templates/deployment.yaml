@@ -94,3 +94,8 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.storage.size }}
         {{- end }}
+        {{- if .Values.seed.enabled }}
+        - name: seed
+          configMap:
+            name: radicale-seed
+        {{- end }}

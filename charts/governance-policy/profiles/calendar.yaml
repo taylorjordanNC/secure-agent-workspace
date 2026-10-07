@@ -4,7 +4,9 @@
 id: calendar
 display_name: Calendar
 description: Read-only Radicale calendar (CalDAV/HTTP) access for governed sandbox agents
-category: calendar
+# Interceptor category enum only allows: other, inference, agent,
+# source_control, messaging, data, knowledge — calendar content maps to knowledge.
+category: knowledge
 # Radicale runs auth-free in the demo, so no credentials key is declared
 # (same precedent as mailpit.yaml).
 endpoints:
