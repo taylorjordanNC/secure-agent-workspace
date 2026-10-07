@@ -94,3 +94,23 @@ network_policies:
       - path: /usr/bin/node
       - path: /usr/bin/node-*
       - path: /usr/local/bin/node
+
+  # On-cluster Mattermost server (charts/mattermost, openshell-agents ns):
+  # the provider profile (profiles/mattermost.yaml) allows it, but like every
+  # other in-cluster service (registry, telemetry-proxy, mailpit) it must ALSO
+  # be named here — the interceptor only signs network access it governs, so a
+  # sandbox policy cannot grant an in-cluster host the ceiling doesn't declare.
+  mattermost:
+    name: mattermost
+    endpoints:
+      - host: mattermost.openshell-agents.svc.cluster.local
+        port: 8065
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
+      - path: /usr/bin/node
+      - path: /usr/bin/node-*
+      - path: /usr/local/bin/node
