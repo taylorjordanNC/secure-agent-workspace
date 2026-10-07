@@ -66,6 +66,19 @@ def test_postgres_deployment_present():
     env = {e["name"]: e["value"] for e in ctr["env"]}
     assert env["POSTGRES_DB"] == "mattermost"
     assert env["POSTGRES_USER"] == "mmuser"
+    assert ctr["securityContext"] == {"runAsUser": 0}
+
+
+def test_security_contexts_and_access_tokens():
+    (mm,) = [d for d in render() if d["kind"] == "Deployment" and d["metadata"]["name"] == "mattermost"]
+    pod_spec = mm["spec"]["template"]["spec"]
+    (ctr,) = pod_spec["containers"]
+    assert pod_spec["securityContext"]["fsGroup"] == 2000
+    assert ctr["securityContext"]["runAsUser"] == 2000
+    env = {e["name"]: e["value"] for e in ctr["env"]}
+    assert env["MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS"] == "true"
+    # Liveness must not fire during first-start plugin extraction.
+    assert ctr["livenessProbe"]["initialDelaySeconds"] == 240
 
 
 def test_route_flag_off_drops_only_the_route():

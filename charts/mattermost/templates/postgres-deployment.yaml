@@ -39,7 +39,7 @@ spec:
                 - {{ .Values.postgresCredentials.user }}
                 - -d
                 - {{ .Values.postgresCredentials.database }}
-            initialDelaySeconds: 5
+            initialDelaySeconds: {{ .Values.postgresReadinessInitialDelaySeconds }}
             periodSeconds: 5
           livenessProbe:
             exec:
@@ -47,10 +47,12 @@ spec:
                 - pg_isready
                 - -U
                 - {{ .Values.postgresCredentials.user }}
-            initialDelaySeconds: 30
+            initialDelaySeconds: {{ .Values.postgresLivenessInitialDelaySeconds }}
             periodSeconds: 10
           resources:
             {{- toYaml .Values.postgresResources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.postgresSecurityContext | nindent 12 }}
           {{- if .Values.storage.postgresSize }}
           volumeMounts:
             - name: data

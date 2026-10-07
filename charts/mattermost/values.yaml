@@ -51,3 +51,23 @@ postgresCredentials:
   database: mattermost
   user: mmuser
   password: mmuser_password
+
+# Security contexts (OpenShift restricted-v2): image files are owned by uid
+# 2000, so the server must run as runAsUser 2000 with fsGroup 2000 for
+# config.json access. Postgres runs as runAsUser 0 because initdb fails with
+# EPERM on a root-owned emptyDir under restricted-v2 — installing that way
+# requires the default service account to have anyuid:
+#   oc adm policy add-scc-to-user anyuid -z default -n <namespace>
+podSecurityContext:
+  fsGroup: 2000
+securityContext:
+  runAsUser: 2000
+postgresSecurityContext:
+  runAsUser: 0
+
+# Probe delays: plugin extraction on first start can exceed 30s, so the
+# server's liveness probe waits 240s before the first check.
+livenessInitialDelaySeconds: 240
+readinessInitialDelaySeconds: 10
+postgresLivenessInitialDelaySeconds: 30
+postgresReadinessInitialDelaySeconds: 5
