@@ -97,7 +97,7 @@ user's `values` on top. Nested maps merge; the user's keys win.
      refuses to mount without allow_driver_config; derive it here so the two
      flags can't drift apart. The user's own `values.allowDriverConfig`
      still wins if set. */ -}}
-{{- if $user.harnessEnabled -}}
+{{- if eq (include "saw-users.harnessEnabled" .) "true" -}}
 {{- $_ := set $base "allowDriverConfig" true -}}
 {{- end -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
@@ -175,6 +175,19 @@ each with the VM ports its oauth2-proxy and its forward listen on. A user's
 {{- end -}}
 
 {{/*
+"true" when the user's sandboxes load a harness bundle: the user asked for it
+(harnessEnabled), or one of their profiles has a sandbox that needs its bundle
+(the catalog's `harnessRequired`, e.g. personal-assistant).
+*/}}
+{{- define "saw-users.harnessEnabled" -}}
+{{- $on := .user.harnessEnabled | default false -}}
+{{- range $profile := include "saw-users.userCatalog" . | fromJsonArray -}}
+{{- if $profile.harnessRequired -}}{{- $on = true -}}{{- end -}}
+{{- end -}}
+{{- ternary "true" "false" $on -}}
+{{- end -}}
+
+{{/*
 The Secrets the user's profiles read (credentialSecret of every provider in
 an enabled workspace). pattern-secrets syncs only these.
 */}}
@@ -201,7 +214,7 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $profiles = $user.profiles -}}
 {{- end -}}
 {{- $bomValues := dict "profiles" $profiles -}}
-{{- if $user.harnessEnabled -}}
+{{- if eq (include "saw-users.harnessEnabled" .) "true" -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
 {{- end -}}
 {{- toYaml $bomValues -}}

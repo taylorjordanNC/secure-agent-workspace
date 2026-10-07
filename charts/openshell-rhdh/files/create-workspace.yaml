@@ -19,10 +19,11 @@ spec:
       profile:
         title: Profile
         type: string
-        enum: [custom-inference, data-science]
+        enum: [custom-inference, data-science, personal-assistant]
         enumNames: ['custom-inference: Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM,
             Ollama, ...)', 'data-science: Data science workspace with NVIDIA inference and web search;
-            CUDA development workspace with NVIDIA inference']
+            CUDA development workspace with NVIDIA inference', 'personal-assistant: Personal assistant:
+            NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing']
         default: data-science
     dependencies:
       profile:
@@ -46,6 +47,29 @@ spec:
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
+        - properties:
+            profile: {const: personal-assistant}
+            uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
+                signed in with Keycloak, for you only: assistant (personal-assistant)'}
+            gmail__client_id: {title: 'gmail: OAuth client ID (for token refresh)', type: string}
+            gmail__client_secret: {title: 'gmail: OAuth client secret (for token refresh)', type: string,
+              'ui:field': Secret, description: Stored in Vault for your workspace only (provider gmail)}
+            gmail__refresh_token: {title: 'gmail: OAuth refresh token (the gateway refreshes the access
+                token)', type: string, 'ui:field': Secret, description: Stored in Vault for your workspace
+                only (provider gmail)}
+            gmail__access_token: {title: 'gmail: Access token (only without a refresh token)', type: string,
+              'ui:field': Secret, description: Stored in Vault for your workspace only (provider gmail)}
+            inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider nvidia)}
+            slack__client_id: {title: 'slack: OAuth client ID (for token refresh)', type: string}
+            slack__client_secret: {title: 'slack: OAuth client secret (for token refresh)', type: string,
+              'ui:field': Secret, description: Stored in Vault for your workspace only (provider slack)}
+            slack__refresh_token: {title: 'slack: OAuth refresh token (the gateway refreshes the access
+                token)', type: string, 'ui:field': Secret, description: Stored in Vault for your workspace
+                only (provider slack)}
+            slack__bot_token: {title: 'slack: Access token (only without a refresh token)', type: string,
+              'ui:field': Secret, description: Stored in Vault for your workspace only (provider slack)}
+          required: [inference__api_key]
   steps:
   - id: request
     name: Submit the request
@@ -64,7 +88,11 @@ spec:
         stringData: {action: create, token: '${{ secrets.backstageToken }}', profile: '${{ parameters.profile
             }}', inference.api_key: '${{ secrets.inference__api_key }}', inference.url: '${{ parameters.inference__url
             }}', inference.model: '${{ parameters.inference__model }}', web-search.api_key: '${{ secrets.web_search__api_key
-            }}'}
+            }}', gmail.client_id: '${{ parameters.gmail__client_id }}', gmail.client_secret: '${{ secrets.gmail__client_secret
+            }}', gmail.refresh_token: '${{ secrets.gmail__refresh_token }}', gmail.access_token: '${{
+            secrets.gmail__access_token }}', slack.client_id: '${{ parameters.slack__client_id }}', slack.client_secret: '${{
+            secrets.slack__client_secret }}', slack.refresh_token: '${{ secrets.slack__refresh_token }}',
+          slack.bot_token: '${{ secrets.slack__bot_token }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request

@@ -430,11 +430,16 @@ def read_entry(cm):
     return entry if isinstance(entry, dict) else {}
 
 
-def registry_entry(user, profile, generation=""):
-    """The saw-users list entry for a portal workspace."""
-    return {"name": user, "profiles": [profile], "ownerSubject": "",
-            "vaultPrefix": f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user, generation)}",
-            "pruneOnRemove": os.environ.get("PRUNE_ON_REMOVE", "true") == "true"}
+def registry_entry(user, profile, generation="", catalog=None):
+    """The saw-users list entry for a portal workspace. A profile whose
+    sandbox needs its harness bundle (catalog `harnessRequired`) also gets
+    harnessEnabled (saw-users derives it from the catalog too)."""
+    entry = {"name": user, "profiles": [profile], "ownerSubject": "",
+             "vaultPrefix": f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user, generation)}",
+             "pruneOnRemove": os.environ.get("PRUNE_ON_REMOVE", "true") == "true"}
+    if ((catalog or {}).get(profile) or {}).get("harnessRequired"):
+        entry["harnessEnabled"] = True
+    return entry
 
 
 def put_configmap(k8s, ns, name, data, labels=None, resource_version=None):
@@ -1077,7 +1082,7 @@ def handle(action, request_name):
             for secret, values in secrets.items():
                 vault.write(f"{prefix}/{secret}", values)
                 log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
-            entry = registry_entry(user, profile, generation)
+            entry = registry_entry(user, profile, generation, catalog)
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
                           resource_version=cm["metadata"].get("resourceVersion") if cm else None)

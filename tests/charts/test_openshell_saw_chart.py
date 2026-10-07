@@ -697,7 +697,7 @@ def test_every_profile_names_its_binaries():
 
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]
+    assert [p.name for p in copies] == ["brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml"]
     for path in copies:
         assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
@@ -707,7 +707,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "nvidia", "openai"}
+    assert set(ab.provider_profiles(tmp_path)) == {"brave", "gmail", "nvidia", "openai", "slack"}
 
 
 def test_create_script_passes_the_keycloak_it_finds():
