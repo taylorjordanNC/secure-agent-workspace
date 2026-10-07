@@ -33,7 +33,8 @@ spec:
       # collide with cuda-dev's enabled cuda-sandbox.
       enabled: false
       agent: openclaw
-      image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
+      # A single amd64 docker-v2 manifest (no multi-arch index exists on quay).
+      image: quay.io/rh-ai-quickstart/nemoclaw-sandbox@sha256:c207a71842d15bac4811c9b652d63e89d29eb90c8e6f9339367f7052425112c6
       providers:
         - nvidia
     - name: toolbox

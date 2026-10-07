@@ -99,8 +99,9 @@ rhdh:
 portal:
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
-  # Python 3 with the standard library is all portal.py needs.
-  image: registry.access.redhat.com/ubi9/python-311:latest
+  # Python 3 with the standard library is all portal.py needs. Pinned to the
+  # multi-arch index digest (SAW convention; consumed across architectures).
+  image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
   # A portal workspace is deleted with its VM when it is removed.
   pruneOnRemove: true
   # delete also removes the user's keys from Vault.

@@ -87,8 +87,9 @@ bom:
     # NemoClaw CLI, needed by `type: nemoclaw` sandboxes (the default
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.
+    # A single amd64 docker-v2 manifest (no multi-arch index exists on quay).
     nemoclaw:
-      cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli:latest
+      cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli@sha256:eb5f4804a389026dc7815ae90e071e45c84aebaa63c4d5bd527decf9cc28c2f6
 
 # OpenShell gateway runtime configuration inside the VM.
 openshell:
@@ -203,7 +204,7 @@ sandboxUiProxy:
 # Needs oidc.issuerUrl (or global.clusterDomain) and a known webui host.
 dashboard:
   enabled: true
-  image: "quay.io/gkrumbach07/openshell-dashboard:latest"
+  image: "quay.io/gkrumbach07/openshell-dashboard@sha256:ec9df77cfcbb4a8e5ac6ad59b00bd61e99a1dec43164d259c52cb7568e224101"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
   # Override the Keycloak namespace for the admin Secret lookup only.
