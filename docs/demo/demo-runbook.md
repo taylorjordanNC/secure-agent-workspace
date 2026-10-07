@@ -27,8 +27,8 @@ URLs below returned 200 / expected output live unless marked otherwise.
 ```bash
 # Keycloak realm
 open https://openshell-keycloak-ingress-saw-keycloak.apps.cluster-ldxgj.dyn.redhatworkshops.io/realms/openshell
-# OpenClaw UI (in-VM)
-open http://localhost:24201
+# OpenClaw Control UI (oauth2-gated; verified 302 → Keycloak login, all-cluster-ldxgj chain)
+open https://workshop-default-notebook-ui.apps.cluster-ldxgj.dyn.redhatworkshops.io/
 # Mailpit UI
 open https://mailpit-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io
 # ArgoCD
@@ -205,15 +205,15 @@ curl -X DELETE https://mailpit-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhat
 
 - Beat 1 Slack research fails: no real Slack token yet (known limitation) —
   record the email-only fallback variant described in Beat 1.
-- OpenClaw UI unreachable via workshop-dashboard route: known gap — in-VM
-  18789 dashboard not listening (route 503 in dry-run); use in-VM
-  http://localhost:24201 which verified 200.
-- oauth2-proxy misbehavior on routes: known gap — in-VM oauth2-proxy was baked
-  with the stale cluster-94vdw issuer/callback. Fix commit `989bc37` (saw-users
-  clusterDomain) is PENDING push to GitHub (Git Operations outage 2026-10-07).
-  Once pushed: one VM delete + Argo sync completes the fresh bake, then
-  re-provision before recording. In-cluster workaround (suspend root app +
-  patch) was rejected as too fragile.
+- OpenClaw UI unreachable via workshop-dashboard route: DOCUMENTED known
+  limitation (OpenShell 0.1.x: OpenClaw binds loopback inside the sandbox
+  netns; docs/deployment-guide.md:267). The demo path is the
+  `workshop-default-notebook-ui` route (see Prerequisites), not the dashboard
+  route. Full chain verified: route → oauth2-proxy (4201/4202, 302→Keycloak) →
+  ui-limit relay (14201/14202) → `openshell forward` (24201/24202) → OpenClaw
+  UI on 127.0.0.1:18789 inside the sandbox netns. In-VM fallback: http://localhost:24201.
+- Transient unit restarts (8080/8090 oauth2/BFF) have `Restart=on-failure`
+  (5s) — a vanished listener is transient, re-check before assuming failure.
 - TUI unavailable: fall back to `openshell logs --tail` CLI for the admin log
   view.
 - Beat 2 probe unexpectedly succeeds: confirm the interceptor is Running and
