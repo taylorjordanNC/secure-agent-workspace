@@ -45,8 +45,8 @@ source:
   goldenImageURL: ""
   # The mirrored image tag the default registry import pulls
   # (scripts/mirror-images-incluster.sh tags OPENSHELL_VERSION, default
-  # v0.0.116 — keep these in sync when overriding).
-  goldenImageTag: "v0.0.116"
+  # v0.1.2 — keep these in sync when overriding).
+  goldenImageTag: "v0.1.2"
   internalRegistry: "image-registry.openshift-image-registry.svc:5000"
   # CDI pull method: "node" (the node's runtime pulls, trusts the internal
   # registry's CA, caches the image) or "pod" (the CDI importer pod).

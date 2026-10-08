@@ -7,7 +7,9 @@ set -euo pipefail
 
 NS="${NS:-openshell-agents}"
 GOLDEN_IMAGE_NAME="${GOLDEN_IMAGE_NAME:-openshell-gateway}"
-GOLDEN_IMAGE_URL="${GOLDEN_IMAGE_URL:-docker://quay.io/rh-ai-quickstart/openshell-gateway:latest}"
+# Pinned to the OpenShell image version contract (OPENSHELL_VERSION in
+# Makefile-quickstart); bump both together. Override still wins.
+GOLDEN_IMAGE_URL="${GOLDEN_IMAGE_URL:-docker://quay.io/rh-ai-quickstart/openshell-gateway:v0.1.2}"
 DISK_SIZE="${DISK_SIZE:-40Gi}"
 
 echo "============================================="

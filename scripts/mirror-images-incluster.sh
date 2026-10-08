@@ -5,7 +5,7 @@ set -euo pipefail
 
 BUILD_NS="${BUILD_NS:-openshell-agents}"
 QUAY_REPO="${QUAY_REPO:-quay.io/rh-ai-quickstart}"
-VERSION="${OPENSHELL_VERSION:-v0.0.116}"
+VERSION="${OPENSHELL_VERSION:-v0.1.2}"
 # Only the gateway VM disk image is needed in the cluster (golden image);
 # sandbox and NemoClaw CLI images are pulled from quay by the VM itself.
 IMAGES="${IMAGES:-openshell-gateway}"
