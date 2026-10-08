@@ -487,8 +487,6 @@ def test_rendered_inputs_validate_in_the_shipped_installer(tmp_path, default_doc
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
     assert "2 workspace(s) ['cuda-dev', 'default']" in result.stdout
-    # The shipped default profile ships the tavily web-search provider enabled:
-    # nvidia (default) + tavily (default) + nvidia (cuda-dev) = 3.
     assert "3 credential(s)" in result.stdout
 
 
@@ -699,7 +697,7 @@ def test_every_profile_names_its_binaries():
 
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml", "tavily.yaml"]
+    assert [p.name for p in copies] == ["brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml"]
     for path in copies:
         assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
 
@@ -707,10 +705,9 @@ def test_installer_profile_copies_match_governance_policy():
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     data = installer_data(default_docs)
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
-    assert data["provider-profile-tavily.yaml"] == (SAW_PROFILES / "tavily.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"brave", "gmail", "nvidia", "openai", "slack", "tavily"}
+    assert set(ab.provider_profiles(tmp_path)) == {"brave", "gmail", "nvidia", "openai", "slack"}
 
 
 def test_create_script_passes_the_keycloak_it_finds():

@@ -57,8 +57,6 @@ def test_validate_accepts_the_shipped_inputs(world):
     result = world.run("validate")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
-    # The shipped default profile ships the tavily web-search provider enabled:
-    # 3 credentials resolve.
     assert "2 workspace(s)" in result.stdout and "3 credential(s)" in result.stdout
     assert world.fake.podman_calls() == [] and world.fake.openshell_calls() == []
 
@@ -142,8 +140,6 @@ def test_failed_install_is_visible_and_clears_ready(world):
 
 
 def test_missing_credential_blocks_apply_but_not_install(world):
-    # The shipped profile ships the tavily web-search provider enabled, so the
-    # web-search secret is required at apply time.
     for f in (world.inputs / "secrets" / "web-search").iterdir():
         f.unlink()
     assert world.run("install").returncode == 0      # software install does not read profiles
@@ -282,9 +278,9 @@ def test_credentials_never_appear_in_argv(world):
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0
     argv = json.dumps(world.fake.openshell_calls())
-    assert "nvapi-TEST-KEY-123" not in argv and "tavily-TEST-KEY-456" not in argv
-    assert world.fake.openshell_state()["providers"]["default/tavily"]["credential"] == \
-        "TAVILY_API_KEY=tavily-TEST-KEY-456"
+    assert "nvapi-TEST-KEY-123" not in argv and "brave-TEST-KEY-456" not in argv
+    assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
+        "BRAVE_API_KEY=brave-TEST-KEY-456"
 
 
 def test_owed_gateway_restart_survives_a_failed_attempt(ab, world, monkeypatch):

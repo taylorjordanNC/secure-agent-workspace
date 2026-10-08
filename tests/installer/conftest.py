@@ -216,7 +216,7 @@ def secrets_dir(tmp_path):
     """Provider Secrets as the VM sees them: /run/saw/secrets/<secret>/<key>."""
     base = tmp_path / "secrets"
     for secret, data in {"inference": {"api_key": "nvapi-TEST-KEY-123", "provider": "build"},
-                         "web-search": {"api_key": "tavily-TEST-KEY-456"}}.items():
+                         "web-search": {"api_key": "brave-TEST-KEY-456"}}.items():
         (base / secret).mkdir(parents=True)
         for key, value in data.items():
             (base / secret / key).write_text(value + "\n")

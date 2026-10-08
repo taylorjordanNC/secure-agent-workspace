@@ -17,8 +17,7 @@ spec:
       baseUrl: https://build.nvidia.com/v1
       credentialSecret: inference
       credentialSecretKey: api_key
-    - name: tavily
-      type: tavily
-      enabled: true
+    - name: brave
+      type: brave
       credentialSecret: web-search
       credentialSecretKey: api_key

@@ -127,15 +127,15 @@ def test_removing_a_provider_deletes_it_only_when_on(ab, fake_env, config, profi
     ledger = tmp_path / "managed.json"
     report = {**config, "prune": {"mode": "report", "sandboxes": False, "ledgerPath": str(ledger)}}
     ab.ProfileApplier(ab.Shell(), report, creds, harness=_harness(ab)).apply(profiles)
-    _drop_provider(profiles, "default", "tavily")
+    _drop_provider(profiles, "default", "brave")
     before = [c for c in fake_env.openshell_calls() if "delete" in c]
     ab.ProfileApplier(ab.Shell(), report, creds, harness=_harness(ab)).apply(profiles)
-    assert "default/tavily" in fake_env.openshell_state()["providers"]
+    assert "default/brave" in fake_env.openshell_state()["providers"]
     assert [c for c in fake_env.openshell_calls() if "delete" in c] == before
-    assert "would delete provider default/tavily" in capsys.readouterr().out
+    assert "would delete provider default/brave" in capsys.readouterr().out
     on = {**config, "prune": {"mode": "on", "sandboxes": False, "ledgerPath": str(ledger)}}
     ab.ProfileApplier(ab.Shell(), on, creds, harness=_harness(ab)).apply(profiles)
-    assert "default/tavily" not in fake_env.openshell_state()["providers"]
+    assert "default/brave" not in fake_env.openshell_state()["providers"]
 
 
 def test_hand_made_workspace_and_provider_are_never_deleted(ab, fake_env, config, profiles, creds, tmp_path):
@@ -485,17 +485,17 @@ def test_failed_provider_delete_stays_in_the_ledger(
     cfg = _on(config, ledger)
     ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     state = fake_env.openshell_state()
-    state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["tavily"], "phase": "Ready"}
+    state["sandboxes"]["default/hand"] = {"image": "base", "providers": ["brave"], "phase": "Ready"}
     fake_env.set_openshell_state(state)
-    _drop_provider(profiles, "default", "tavily")
+    _drop_provider(profiles, "default", "brave")
     ab.ProfileApplier(ab.Shell(), cfg, creds, harness=_harness(ab)).apply(profiles)
     out = capsys.readouterr().out
-    assert "default/tavily" in fake_env.openshell_state()["providers"]
+    assert "default/brave" in fake_env.openshell_state()["providers"]
     assert "default/hand" in fake_env.openshell_state()["sandboxes"]
-    assert "tavily" in _ledger_names(ledger, "provider")
+    assert "brave" in _ledger_names(ledger, "provider")
     pruned = json.loads(ledger.read_text())["lastPrune"]["pruned"]
-    assert "provider default/tavily" not in pruned
-    assert "deleted provider default/tavily" not in out
+    assert "provider default/brave" not in pruned
+    assert "deleted provider default/brave" not in out
     assert "delete failed" in out
 
 

@@ -85,8 +85,7 @@ APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.dom
       provider (Brave by default); entered into the portal form; stored to
       Vault.
 - [ ] Governance interceptor Running with profiles loaded: `brave`, `gemini`,
-      `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `tavily`,
-      `web-search`.
+      `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `web-search`.
 - [ ] Mattermost on-cluster: server + postgres pods Running in
       `openshell-agents` ns; team `saw` with channels `#ai-platform`
       (channel_id `h115qetq538rfmf6798bxxsg9w` — renamed from research; 5
