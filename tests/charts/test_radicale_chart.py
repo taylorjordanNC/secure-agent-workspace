@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""charts/radicale: on-cluster calendar provider + web UI for the GTC demo."""
+"""demo/charts/radicale: on-cluster calendar provider + web UI for the GTC demo."""
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-CHART = ROOT / "charts" / "radicale"
+CHART = ROOT / "demo" / "charts" / "radicale"
 HELM = shutil.which("helm")
 pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 

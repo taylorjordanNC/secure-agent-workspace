@@ -1,4 +1,4 @@
-"""charts/mattermost: on-cluster chat provider + web UI for the GTC demo."""
+"""demo/charts/mattermost: on-cluster chat provider + web UI for the GTC demo."""
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-CHART = ROOT / "charts" / "mattermost"
+CHART = ROOT / "demo" / "charts" / "mattermost"
 HELM = shutil.which("helm")
 pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 

@@ -1,4 +1,4 @@
-"""charts/mailpit: on-cluster SMTP sink + web UI for the recorded demo."""
+"""demo/charts/mailpit: on-cluster SMTP sink + web UI for the recorded demo."""
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-CHART = ROOT / "charts" / "mailpit"
+CHART = ROOT / "demo" / "charts" / "mailpit"
 HELM = shutil.which("helm")
 pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 

@@ -24,7 +24,7 @@ URLs below returned 200 / expected output live unless marked otherwise.
       planning — your input requested", "GTC Berlin demo schedule update",
       "Security review: SAW governance sign-off needed", "AI Platform sync —
       notes and action items") + 1 old dry-run test.
-- [ ] Radicale deployed in `openshell-agents` ns (`charts/radicale`; Service
+- [ ] Radicale deployed in `openshell-agents` ns (`demo/charts/radicale`; Service
       `radicale:5232`, Route
       `radicale-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io`);
       server Running; collection `/demo/personal/` seeded with 4 events (AI
