@@ -15,7 +15,7 @@ spec:
     # (OpenShell `provider refresh`, oauth2-refresh-token): the Secret holds
     # client_id, client_secret and refresh_token, and the sandbox only ever
     # sees a placeholder. Without one, the Secret's token is used as is.
-    # See docs/daily-briefing.md.
+    # See demo/daily-briefing.md.
     - name: slack
       type: slack
       credentialSecret: slack
