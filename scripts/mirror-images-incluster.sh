@@ -29,14 +29,6 @@ for IMAGE in ${IMAGES}; do
   if oc -n "${BUILD_NS}" get job "mirror-${IMAGE}" \
       -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q True; then
     echo "${IMAGE}:${VERSION} already mirrored."
-    # The image may have been mirrored without the :latest convenience
-    # tag — ensure the tag on the skip path too. (The golden-image DV
-    # import now pulls :0.0.103, so :latest is no longer required by the
-    # import itself.)
-    if ! oc -n "${BUILD_NS}" get is "${IMAGE}" -o jsonpath='{.spec.tags[*].name}' 2>/dev/null | grep -qw latest; then
-      oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null || \
-        echo "WARN: could not tag ${IMAGE}:latest on the skip path" >&2
-    fi
     continue
   fi
   echo "Mirroring ${IMAGE}:${VERSION}..."
@@ -59,23 +51,7 @@ for IMAGE in ${IMAGES}; do
     sleep 5
   done
   oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=2 2>/dev/null
-  # Tag :latest — a convenience default tag for manual pulls. The
-  # golden-image DV import (bootstrap-golden-image.sh) now pulls :0.0.103,
-  # so a missing :latest no longer blocks the import. Retry: the source tag
-  # can take a beat to become readable after the job completes.
-  local_tag_ok=0
-  for _ in 1 2 3; do
-    if oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null; then
-      local_tag_ok=1
-      break
-    fi
-    sleep 10
-  done
-  if [ "$local_tag_ok" -ne 1 ] || \
-     ! oc -n "${BUILD_NS}" get is "${IMAGE}" -o jsonpath='{.spec.tags[*].name}' 2>/dev/null | grep -qw latest; then
-    echo "WARN: ${IMAGE}:latest tag missing after retries — the golden-image DV import will crash-loop until it exists" >&2
-  fi
   echo "  ${IMAGE} done."
 done
 
-echo "All images mirrored (tag: ${VERSION}, also tagged as :latest)."
+echo "All images mirrored (tag: ${VERSION})."
