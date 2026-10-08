@@ -1,46 +1,46 @@
 # Demo options
 
-Two ways to demo the Secure Agent Workspace. Both use the same platform
-install; they differ in guardrail depth and provider strategy.
+Two walks of the SAME personal assistant. The honest axis is the provider
+strategy: point the providers at external accounts, or run the services
+inside the cluster. Choose by what you can set up: accounts or services.
 
-## Option A: daily briefing (external Slack + Gmail)
+## External providers: real Slack and Gmail
 
 Step-by-step walkthrough: [personal-assistant-demo.md](personal-assistant-demo.md)
 (how the briefing works under the hood: [daily-briefing.md](daily-briefing.md)).
 
-- From an empty OpenShift cluster to an agent that keeps a daily briefing of
-  one user's Slack and Gmail.
-- SAW-BOM `personal-assistant` profile: one NemoClaw sandbox with the
-  `daily-briefing` harness bundle (a skill plus the `slack-reader` and
-  `gmail-reader` MCP servers), NVIDIA inference, read-only Slack and Gmail
-  providers, and token placeholders the agent never resolves.
+- The agent reads real Slack and Gmail, so you need two external demo
+  accounts (Slack app, Google Cloud OAuth client): about 30 minutes, once.
+- Quick to run: one workspace, one prompt, a ~10-minute demo.
+- Same platform install, same profile shape: one NemoClaw sandbox with the
+  `daily-briefing` harness bundle, NVIDIA inference, read-only Slack and
+  Gmail providers, and token placeholders the agent never resolves.
 - Self-service via the Red Hat Developer Hub portal: the user `dana` picks
   the profile, enters her keys, and gets her own workspace.
-- Proves the platform plus the portal story. Plan about 30 minutes of
-  demo-account setup (Slack app, Google Cloud OAuth client) before the run.
 
-## Option B: fully on-cluster GTC arc
+## On-cluster providers: chat, email and calendar in the cluster
 
-Runbook: [gtc-runbook.md](gtc-runbook.md).
+Walkthrough: [on-cluster-demo.md](on-cluster-demo.md).
 
-- A guided arc that proves the security controls end to end with zero
-  external dependencies: Mattermost chat, Mailpit email and Radicale
-  calendar all run on the cluster.
-- Beats: PTO catch-up across chat and mail, a governance block that denies
-  the calendar provider, VM containment of the agent, a policy-as-data
-  capability grant (calendar profile), and workspace provisioning.
+- Chat, email and calendar services (Mattermost, Mailpit, Radicale) run
+  inside the cluster, so you stand up three demo services instead: about
+  20 minutes, once.
+- More setup overall: services + profile placement + seeding + two
+  workspaces ≈ 1.5 to 2 hours, mostly waiting; the demo itself is ~12 to
+  15 minutes.
+- As a consequence of the on-cluster providers, it shows more of the
+  enforcement layers: the sandbox deny, the provider-create deny, VM
+  containment of the agent, a policy-as-data capability grant through
+  GitOps, and workspace provisioning.
 - The grant is the story: the interceptor loads profiles at startup, the
   new capability arrives as data (a YAML file), and the same request that
   was denied is allowed after the sync.
 
-## How they differ
+## Choosing
 
-- Same platform: one pattern install, Keycloak users, NemoClaw sandboxes,
-  the interceptor enforcing policy on every provider call.
-- Option A points the providers at external services (Slack, Gmail) and
-  shows the self-service portal; it proves platform + portal.
-- Option B keeps everything on-cluster and walks the guardrails live
-  (deny, contain, grant, provision); it proves the controls.
+Short on time? Take the external-providers demo. Want every layer of the
+guardrails on show and can invest in the setup? Take the on-cluster demo.
+Neither is better — same assistant, different provider strategy.
 
 ## Charts
 
@@ -65,10 +65,10 @@ deploying the sandbox (the interceptor loads profiles at startup), or after
 deployment and let Argo auto-sync.
 
 - For EXISTING sandboxes, the sync is not enough: use the two-step
-  `provider create` + `sandbox provider attach` (see the runbook).
+  `provider create` + `sandbox provider attach` (see the on-cluster demo).
 - If the new capability is still denied after the sync, restart the
   interceptor pod: profile hot-reload does not always fire.
-- In Option B, `calendar.yaml` is the live beat-4 commit: leave it out of
+- In the on-cluster demo, `calendar.yaml` is the live beat-4 commit: leave it out of
   the pre-placed set if you want the genuine "this capability was not there
   before" moment.
 

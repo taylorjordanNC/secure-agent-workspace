@@ -1,6 +1,8 @@
-# GTC Berlin Demo Runbook — Secure Agent Workspace
+# A personal assistant, fully on-cluster — Secure Agent Workspace
 
-This runbook scripts the silent recording of the GTC Berlin demo of the Secure
+Developed for the GTC Berlin showcase of the Secure Agent Workspace.
+
+This runbook scripts the silent recording of this demo of the Secure
 Agent Workspace (SAW): a per-user KubeVirt VM running the OpenClaw assistant
 under NVIDIA OpenShell runtime governance, deployed via GitOps on Red Hat
 OpenShift Virtualization. Six beats show (0) what is deployed, (1) the catch-up
@@ -9,6 +11,16 @@ attack blocked at the sandbox, (3) rogue-agent containment down to the VM
 layer, (4) a new capability requested and delivered as policy-as-data through
 GitOps, and (5) provisioning a new user workspace through GitOps.
 Recording is silent; add captions later using the per-beat caption suggestions.
+
+**How long it takes**
+
+| Part | Time |
+|---|---|
+| Demo services (Mattermost, Mailpit, Radicale — once) | ~20 minutes |
+| Install the platform | 30 to 60 minutes, mostly waiting |
+| Profile placement + seeding (channels, inbox, calendar) | ~20 minutes |
+| Two workspaces (alice + bob) | ~15 minutes each, mostly waiting |
+| The demo itself | ~12 to 15 minutes |
 
 Verified on cluster-ldxgj 2026-10-07 (Phase 1d dry-run): all beat commands and
 URLs below returned 200 / expected output live unless marked otherwise.
