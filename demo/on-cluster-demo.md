@@ -9,7 +9,7 @@ re-registration email that prompts the agent into denied actions at three
 layers, (3) rogue-agent containment down to the VM
 layer, (4) the capability request that follows from the block, delivered as
 policy-as-data through GitOps, and (5) provisioning a new user workspace
-through GitOps.
+through the self-service portal (Developer Hub) and GitOps.
 Present it live, record it if you want a reusable take, or walk through it on
 your own.
 
@@ -20,7 +20,8 @@ your own.
 | Demo services (Mattermost, Mailpit, Radicale — once) | ~20 minutes |
 | Install the platform | 30 to 60 minutes, mostly waiting |
 | Profile placement + seeding (channels, inbox, calendar) | ~20 minutes |
-| Two workspaces (alice + bob) | ~15 minutes each, mostly waiting |
+| Two workspaces (alice + bob; bob's via the portal during setup) | ~15 minutes each, mostly waiting |
+| Self-service portal one-time setup (operators + chart + Vault + client job) | ~20 to 30 minutes, mostly operator CSVs and the backstage dynamic-plugins init |
 | The demo itself | ~12 to 15 minutes |
 
 ## Prerequisites checklist (verify before presenting)
@@ -63,9 +64,25 @@ APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.dom
       provider from the sandbox (`openshell sandbox provider detach notebook
       calendar` + `openshell provider delete --name calendar`). After beat 4
       the cluster returns to the committed state.
-- [ ] Bob's workspace pre-provisioned for the beat-5 cut: VM `bob` in ns
-      `saw-bob`, Running/Ready, saw-apply Done; OpenClaw UI route
+- [ ] Bob's workspace pre-provisioned: VM `bob` in ns `saw-bob`,
+      Running/Ready, saw-apply Done — provisioned before the portal existed,
+      then the manual Argo trio (`saw-bob-ws`/`-bom`/`-secrets`) was deleted
+      with `--cascade=orphan`. Beat 5's first create-or-update run registers
+      bob (writes `saw-ws-bob`), reuses the existing VM, and completes
+      quickly; OpenClaw UI route
       `bob-default-notebook-ui.apps.<cluster-domain>`.
+- [ ] RHDH portal ready: Tekton + RHDH operators Succeeded
+      (`oc get csv -A | grep -iE 'rhdh|pipelines'`); backstage pod 2/2
+      Running in `rhdh`; portal route returns 200 (see the URL list below):
+      `https://backstage-developer-hub-rhdh.apps.${APPS_DOMAIN}`;
+      `saw-rhdh-keycloak-client` job Done; ExternalSecret `rhdh-oidc`
+      SecretSynced; Vault role `saw-portal-writer` bound (seeded via
+      `oc exec vault-0` — no `imperative` namespace on this cluster); the
+      `saw-bob` catalog entry appears after the first create-or-update run
+      (it does not pre-exist); sign in as `admin` (admin templates visible).
+- [ ] API keys for the beat-5 form at hand: the `data-science` profile
+      requires NVIDIA + Tavily keys (entered into the portal form; stored to
+      Vault).
 - [ ] Governance interceptor Running with profiles loaded: `brave`, `gemini`,
       `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `tavily`,
       `web-search`.
@@ -74,12 +91,20 @@ APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.dom
       (channel_id `h115qetq538rfmf6798bxxsg9w` — renamed from research; 5
       substantive messages)
       and `#sandbox-admin` (empty, for beat 4/5 requests).
-- [ ] Mattermost agent PAT known: user `saw-agent`, token
-      `pqq38oaibpfffpeyzsoimwyhme`; provider created in-VM
+- [ ] Mattermost agent PAT at hand: the `saw-agent` PAT (export it as
+      `MATTERMOST_TOKEN`, e.g. `export MATTERMOST_TOKEN=<the saw-agent PAT>`); provider created in-VM
       (`openshell provider create --name mattermost --type mattermost
-      --credential MATTERMOST_TOKEN=pqq38oaibpfffpeyzsoimwyhme`) and attached
+      --credential MATTERMOST_TOKEN=${MATTERMOST_TOKEN}`) and attached
       to sandbox `notebook` (`openshell sandbox provider attach notebook
       mattermost` → `provider status` → `ready`).
+- [ ] Portal one-time state (beat 5 ready): Tekton + RHDH operators present
+      (`oc get csv -A | grep -iE 'rhdh|pipelines'` → Succeeded);
+      `saw-rhdh-keycloak-client` job Done in `rhdh`; Vault role
+      `saw-portal-writer` bound to SA `saw-portal-provisioner`; ExternalSecret
+      `rhdh-oidc` SecretSynced; portal route 200 (see the URL list below); the
+      manual `saw-bob-*` Argo trio deleted with `--cascade=orphan` (VM bob
+      survives; the registry entry `saw-ws-bob` is created by the first
+      create-or-update run).
 - [ ] URLs (all returned 200 in dry-run):
 
 ```bash
@@ -95,9 +120,11 @@ open https://mailpit-ui-openshell-agents.${APPS_DOMAIN}
 open https://mattermost-ui-openshell-agents.${APPS_DOMAIN}
 # ArgoCD
 open https://openshift-gitops-server-openshift-gitops.${APPS_DOMAIN}
+# RHDH self-service portal (beat 5)
+open https://backstage-developer-hub-rhdh.${APPS_DOMAIN}
 # Radicale UI
 open https://radicale-ui-openshell-agents.${APPS_DOMAIN}
-# Bob's OpenClaw UI (beat-5 cut destination)
+# Bob's OpenClaw UI (beat-5 jump destination)
 open https://bob-default-notebook-ui.${APPS_DOMAIN}
 ```
 
@@ -115,7 +142,8 @@ This layout works for a live demo, a recording, or a self-guided walkthrough.
 
 Split-screen for all beats:
 - LEFT = browser: Mattermost UI (#ai-platform for beats 1/2, #sandbox-admin for
-  beats 4/5), OpenClaw UI, Mailpit UI, Keycloak, ArgoCD.
+  beats 4/5), RHDH self-service portal (beat 5), OpenClaw UI, Mailpit UI,
+  Keycloak, ArgoCD.
 - RIGHT = browser: the OpenShell dashboard UI — the `workshop-webui` route →
   oauth2 Keycloak login → dashboard, served by the in-VM BFF. The admin watches
   the denial evidence / OCSF audit trail (ALLOWED / DENIED log lines) here.
@@ -124,7 +152,7 @@ Split-screen for all beats:
   dashboard's content should be verified in the walkthrough; the TUI fallback
   covers gaps.
 
-## Pre-demo state verification (optional)
+## Pre-demo state verification
 
 Do this BEFORE the audience arrives — these are direct diagnostic commands from
 dry-runs that verify enforcement directly, bypassing the agent. They are NOT
@@ -134,7 +162,7 @@ appear in the OpenShell-side logs (dashboard log view / TUI log pane).
 
 ```bash
 # Beat-1 connectivity (agent's allowed reads; run in-VM or from the sandbox):
-openshell sandbox exec -n notebook -- node -e "fetch('http://mattermost.openshell-agents.svc.cluster.local:8065/api/v4/channels/h115qetq538rfmf6798bxxsg9w/posts?per_page=3',{headers:{Authorization:'Bearer pqq38oaibpfffpeyzsoimwyhme'}}).then(r=>r.status).then(console.log)"
+openshell sandbox exec -n notebook -- node -e "fetch('http://mattermost.openshell-agents.svc.cluster.local:8065/api/v4/channels/h115qetq538rfmf6798bxxsg9w/posts?per_page=3',{headers:{Authorization:\"Bearer ${MATTERMOST_TOKEN}\"}}).then(r=>r.status).then(console.log)"
 # Expected: 200 (direct bearer token, no placeholder/proxy mechanics)
 openshell sandbox exec -n notebook -- node -e "fetch('http://mailpit.openshell-agents.svc.cluster.local:8025/api/v1/messages').then(r=>r.status).then(console.log)"
 # Expected: 200
@@ -323,33 +351,50 @@ Talking point: "The block in beat 2 surfaced the legitimate need — the request
 the review in git, the ArgoCD sync, and the same command that was denied now
 succeeds. A capability is a one-file commit, enforced by the interceptor."
 
-## Beat 5 — Provisioning a new workspace (~2 min with a cut)
+## Beat 5 — Provisioning a new workspace via the self-service portal (~3 min)
 
-WHO: Admin. LEFT: Mattermost UI (#sandbox-admin) + ArgoCD UI.
+WHO: Admin. LEFT: Mattermost UI (#sandbox-admin) → RHDH portal → ArgoCD
+(secondary).
 
 1. Bob posts a sandbox request in #sandbox-admin (LEFT, Mattermost UI).
 2. Admin approves the request in the channel (Mattermost UI).
-3. Admin provisions bob's workspace — LEFT: ArgoCD/Argo app sync + prepare
-   job. NOTE: this cluster has no Tekton; on a Tekton-enabled cluster the RHDH
-   portal PipelineRun page (5 task steps) is the visual.
+3. Admin opens the portal
+   (`https://backstage-developer-hub-rhdh.apps.${APPS_DOMAIN}`) and signs in
+   as `admin` → **Create** → **Create or update an agent workspace for a
+   user** → user `bob`, profile `data-science`, enters the NVIDIA + Tavily
+   keys → **Review** → **Create**.
+4. The run page shows the 5 pipeline steps: "Verify the request, store the
+   keys, register the workspace" → "Argo CD creates the workspace's
+   applications" → "Argo CD creates the VM" → "Start the VM" → "Install
+   OpenShell and the sandboxes (about 10 minutes)", ending with the
+   **Workspace status report** step. NOTE: the steps complete quickly here
+   because bob's workspace already exists — a first-time provisioning takes
+   ~15 minutes.
+5. Catalog: the `saw-bob` entity appears right after the register step, with
+   status **Requested → Creating → Starting the VM → Installing → Ready**;
+   the **Tekton/CI** tab on `saw-bob` shows the pipeline graph with each
+   task's log.
+6. Optional secondary: ArgoCD shows the `portal-ws-bob` Application (the
+   ApplicationSet-delivered workspace).
+7. Jump to bob's READY workspace: bob's OpenClaw UI at
+   `bob-default-notebook-ui.apps.<cluster-domain>` (pre-provisioned for the
+   jump; no ~10 min cut needed).
 
 ```bash
 # Verify the workspace is ready:
 oc get vmi -n saw-bob        # VM bob Running
 oc -n saw-bob get jobs       # saw-apply Done
+oc -n saw-portal get configmap saw-ws-bob   # portal-managed registry entry
 ```
 
-4. CUT (~10 minutes later) to bob's READY workspace: bob's OpenClaw UI at
-   `bob-default-notebook-ui.apps.<cluster-domain>`
-   (pre-provisioned for the cut).
-
-NOTE: bob's workspace was provisioned via the manual Argo app trio
-`saw-bob-ws`/`saw-bob-bom`/`saw-bob-secrets`. Post-demo cleanup: add bob
-to `overrides/saw-users.yaml` in git and delete the manual trio to return to
-the pattern-managed path.
+NOTE: bob's workspace is portal-managed (registry entry `saw-ws-bob`, keys in
+Vault under `secret/data/hub/saw-bob/`); the manual Argo trio is gone.
+Re-running the template is idempotent — the keys are re-stored as a new Vault
+generation and the workspace is left in place.
 
 Talking point: "A new teammate gets a governed workspace — requested in the channel,
-approved, and delivered by GitOps."
+approved, and provisioned through the self-service portal: keys land in Vault, an
+ApplicationSet delivers the workspace by GitOps."
 
 ## State-reset checklist between runs
 
@@ -375,6 +420,14 @@ curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -
 
 # Mattermost: clear the #sandbox-admin requests if posted for beats 4/5
 # (Mattermost UI).
+
+# Beat 5: nothing to reset between runs — the create-or-update run is
+# idempotent (new Vault generation, workspace left in place); delete any
+# run-page results only if the audience should see a fresh run. Optional
+# from-scratch reset: delete via the portal (Catalog →
+# saw-bob → Delete workspace) and re-provision bob via the portal during
+# setup.
+
 # Provider delete/re-create is NOT needed between runs: calendar/mattermost
 # providers persist (no re-attach probes required).
 
@@ -394,6 +447,16 @@ curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -
   `openshell provider create --name mattermost --type mattermost
   --credential MATTERMOST_TOKEN=...` (if missing), then
   `openshell sandbox provider attach notebook mattermost`.
+- Beat 1 agent fetch of the Mattermost channel may fail with EACCES
+  "transparent TCP mapping is expired" — the supervisor's policy-DNS mappings
+  have a ~10-15s TTL and agent-spawned processes can hit an expired mapping
+  (`openshell sandbox exec` fetches always succeed: fresh DNS + connect
+  back-to-back). The ALLOWED path recovers on retry (connections re-stage on
+  use); the guaranteed fallback is pre-staging the channel and inbox data to
+  a scratch file (e.g. `/sandbox/catchup-source.txt`, node fetch via
+  `openshell sandbox exec`) and having the agent read that — the digest
+  email still arrives in Mailpit (Mailpit's read-write endpoint is
+  unaffected).
 - OpenClaw UI unreachable via workshop-dashboard route: DOCUMENTED known
   limitation (OpenShell 0.1.x: OpenClaw binds loopback inside the sandbox
   netns; docs/deployment-guide.md:267). The demo path is the
@@ -416,3 +479,28 @@ curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -
   `charts/governance-policy/profiles/calendar.yaml`.
 - Radicale events re-seed automatically if the pod is recreated (emptyDir) —
   no manual re-seed needed.
+- Beat-5 template fails at "Submit the request" (HTTP 500): check
+  `oc logs -n rhdh deploy/backstage-developer-hub -c saw-ca-bundle`; portal
+  pod restart: `oc rollout restart deploy/backstage-developer-hub -n rhdh`.
+- Beat-5 run fails with "namespace saw-bob exists and is not managed by the
+  portal": the manual Argo trio still exists or the registry ConfigMap is
+  missing — remove the trio and re-provision bob via the portal.
+- Admin templates ("… for a user") not visible in the portal: `portal.admins`
+  must include `admin` (chart default).
+- Beat-5 run page shows a task red: check the task's log on the Tekton/CI tab
+  of `saw-bob`; common cause is a failed Vault write (`saw-portal-vault` job
+  not Done).
+- Portal sign-in fails with "Invalid parameter: redirect_uri": the
+  keycloak-client job didn't run or failed (e.g. an `apps.apps` redirect
+  URL) — check `oc -n rhdh get job saw-rhdh-keycloak-client`, fix the cause,
+  delete the Job (jobs are immutable), then re-run `helm upgrade`.
+- Portal clusterDomain pitfall: `global.clusterDomain` must be the BARE GUID
+  domain (e.g. `cluster-ldxgj.dyn.redhatworkshops.io`) — the chart prepends
+  `apps.` itself; passing `apps.cluster-...` produces `apps.apps.…` URLs and
+  a failing keycloak-client job (HTTP 503).
+- Portal pods stuck in Init: backstage's install-dynamic-plugins init takes
+  ~8 minutes (npm pack per plugin) before pods go 2/2 — wait, do not
+  restart.
+- Portal users: signing in as a different user requires ending the Keycloak
+  SSO session — a backstage sign-out alone re-authenticates the previous
+  user silently; use the Keycloak logout endpoint or a private window.
