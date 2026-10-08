@@ -748,7 +748,9 @@ def test_a_cleanup_overtaken_after_its_check_leaves_the_replacement_alone(portal
         real(self, path)
     monkeypatch.setattr(portal.Vault, "destroy", destroy)
     assert portal.main(["finish-delete", "alice"]) == 1               # A: entry changed, left
-    assert overtaken == [f"{KEYS}/inference"], "A only ever reaches its own generation"
+    # Cleanup goes through every Secret name in the catalog: which one A
+    # reached first does not matter, only that it was its own generation's.
+    assert len(overtaken) == 1 and overtaken[0].startswith(f"{KEYS}/"), "A only ever reaches its own generation"
     entry = json.loads(fake.objects[REGISTRY]["data"]["user.json"])
     assert entry["vaultPrefix"] == f"secret/data/{NEW_KEYS}"
     assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
@@ -1321,7 +1323,7 @@ def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
     (tmp_path / "trusted.crt").write_text(pem.format("TRUSTED"))
     (tmp_path / "extra.crt").write_text(pem.format("EXTRA"))
     monkeypatch.setattr(mod, "SYSTEM", (str(tmp_path / "system.crt"),))
-    monkeypatch.setattr(mod, "SA", str(tmp_path / "no-sa"))
+    monkeypatch.setattr(mod, "SA_DIRS", (str(tmp_path / "no-sa"),))
     monkeypatch.setenv("TRUSTED_CA_FILE", str(tmp_path / "trusted.crt"))
     monkeypatch.setenv("EXTRA_CA_FILE", str(tmp_path / "extra.crt"))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
@@ -1330,3 +1332,10 @@ def test_the_ca_bundle_holds_every_source_found(tmp_path, monkeypatch):
     text = out.read_text()
     assert text.index("SYSTEM") < text.index("TRUSTED") < text.index("EXTRA")
     assert text.count("BEGIN CERTIFICATE") == 3
+
+
+def test_a_profile_that_needs_its_harness_registers_it(portal, monkeypatch):
+    monkeypatch.setenv("VAULT_KV_MOUNT", "secret")
+    catalog = {"personal-assistant": {"harnessRequired": True}, "data-science": {"harnessRequired": False}}
+    assert portal.registry_entry("carol", "personal-assistant", catalog=catalog)["harnessEnabled"] is True
+    assert "harnessEnabled" not in portal.registry_entry("carol", "data-science", catalog=catalog)

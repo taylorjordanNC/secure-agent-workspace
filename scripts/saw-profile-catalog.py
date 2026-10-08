@@ -44,6 +44,17 @@ def load(path):
 def secret_fields(provider):
     """The fields a provider reads from its Secret, as the installer does
     (resolve_credentials): the key, and optionally a base URL and a model."""
+    if (provider.get("refresh") or {}).get("strategy") == "oauth2-refresh-token":
+        # Refresh material (the gateway mints the token), or a token used as
+        # is; the installer refuses a Secret with neither.
+        return [{"key": "client_id", "kind": "text", "required": False,
+                 "title": "OAuth client ID (for token refresh)"},
+                {"key": "client_secret", "kind": "secret", "required": False,
+                 "title": "OAuth client secret (for token refresh)"},
+                {"key": "refresh_token", "kind": "secret", "required": False,
+                 "title": "OAuth refresh token (the gateway refreshes the access token)"},
+                {"key": provider.get("credentialSecretKey", "api_key"), "kind": "secret",
+                 "required": False, "title": "Access token (only without a refresh token)"}]
     fields = [{"key": provider.get("credentialSecretKey", "api_key"), "kind": "secret",
                "required": True, "title": "API key"}]
     if provider.get("baseUrlSecretKey"):
@@ -77,7 +88,9 @@ def catalog():
                 ui = sb.get("ui") or {}
                 sandboxes.append({"name": sb["name"], "type": sb.get("type", "generic"),
                                   "enabled": sb.get("enabled", True),
-                                  "uiRoute": bool(ui.get("route", False))})
+                                  "uiRoute": bool(ui.get("route", False)),
+                                  "harnessRequired": bool(sb.get("harnessRef")
+                                                          and sb.get("harnessRequired"))})
             workspaces.append({"name": name, "description": description, "enabled": enabled,
                                "sandboxes": sandboxes})
             if not enabled:
@@ -95,8 +108,16 @@ def catalog():
             # The Secret's optional `provider` key lets the installer refuse
             # a key for another service; only set when it is unambiguous.
             entry["provider"] = entry["providers"][0] if len(entry["providers"]) == 1 else ""
+        # A sandbox whose harness bundle is what it is for (harnessRequired,
+        # e.g. personal-assistant) needs harnessEnabled: saw-bom keeps the
+        # harnessRef and openshell-saw allows the mount. saw-users and the
+        # portal turn it on for the users of such a profile. An opt-in demo
+        # bundle (data-science's ds-default) stays opt-in.
+        harness = any(sb["harnessRequired"] for ws in workspaces if ws["enabled"]
+                      for sb in ws["sandboxes"] if sb["enabled"])
         out[pdir.name] = {"description": "; ".join(dict.fromkeys(descriptions)),
-                          "workspaces": workspaces, "secrets": secrets}
+                          "workspaces": workspaces, "secrets": secrets,
+                          "harnessRequired": harness}
     return {"profiles": out}
 
 

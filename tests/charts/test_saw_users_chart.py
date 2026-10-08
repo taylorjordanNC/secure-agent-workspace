@@ -124,8 +124,7 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert alice["spec"]["source"]["targetRevision"] == "main"
     alice_values = helm_values(alice)
     assert alice_values["accessControl"] == {"owner": "alice", "ownerSubject": ""}
-    assert alice_values["job"]["waitForSecrets"] is True
-    assert alice_values["job"]["backoffLimit"] == 5
+    assert "job" not in alice_values      # no prepare Job to tune
     assert alice_values["dashboard"]["insecureSkipIssuerTlsVerify"] is True
     assert alice_values["global"]["clusterDomain"] == "example.com"
     assert "originURL" not in alice_values["global"]
@@ -134,7 +133,6 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     bob_values = helm_values(app(docs, "saw-bob"))
     assert bob_values["accessControl"] == {"owner": "bob", "ownerSubject": "3f2c-subject"}
     assert bob_values["dashboard"]["insecureSkipIssuerTlsVerify"] is False
-    assert bob_values["job"]["waitForSecrets"] is True
 
 
 def test_empty_global_values_are_left_out(tmp_path):
@@ -362,3 +360,22 @@ def test_a_user_can_opt_into_the_demo_harness(tmp_path):
     docs = docs_from(render_file(tmp_path, [dict(ALICE, harnessEnabled=True)]))
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": ["data-science"], "harnessEnabled": True}
+
+
+def test_the_personal_assistant_profile_turns_its_harness_on(tmp_path):
+    """Its NemoClaw sandbox is for its bundle (harnessRequired): the user gets
+    harnessEnabled and allowDriverConfig without asking, and the Slack and
+    Gmail Secrets are synced and mounted. It has no web search."""
+    docs = docs_from(render_file(tmp_path, [{"name": "carol", "profiles": ["personal-assistant"]}, ALICE]))
+    assert helm_values(app(docs, "saw-carol-bom")) == {
+        "profiles": ["personal-assistant"], "harnessEnabled": True}
+    vm = helm_values(app(docs, "saw-carol"))
+    assert vm["allowDriverConfig"] is True
+    assert set(vm["additionalProviderSecrets"]) == {"slack", "gmail"}
+    assert set(helm_values(app(docs, "saw-carol-secrets"))["secrets"]) == {
+        "inference", "slack", "gmail"}
+    # The assistant's OpenClaw UI gets its own route.
+    assert [(u["workspace"], u["sandbox"]) for u in vm["sandboxUi"]] == [("personal-assistant", "assistant")]
+    # data-science's demo bundle stays opt-in.
+    assert helm_values(app(docs, "saw-alice-bom")) == {"profiles": ["data-science"]}
+    assert "allowDriverConfig" not in helm_values(app(docs, "saw-alice"))
