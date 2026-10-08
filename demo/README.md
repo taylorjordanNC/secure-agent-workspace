@@ -29,12 +29,15 @@ Walkthrough: [on-cluster-demo.md](on-cluster-demo.md).
   workspaces ≈ 1.5 to 2 hours, mostly waiting; the demo itself is ~12 to
   15 minutes.
 - As a consequence of the on-cluster providers, it shows more of the
-  enforcement layers: the sandbox deny, the provider-create deny, VM
+  enforcement layers: a fake credential re-registration email prompting the
+  agent into denied actions (calendar call denied at the sandbox proxy, exfil
+  denied at egress, circumvention denied at the provider-create gate), VM
   containment of the agent, a policy-as-data capability grant through
   GitOps, and workspace provisioning.
-- The grant is the story: the interceptor loads profiles at startup, the
-  new capability arrives as data (a YAML file), and the same request that
-  was denied is allowed after the sync.
+- The grant is the story: the block surfaces the legitimate need, the
+  interceptor loads profiles at startup, the new capability arrives as data
+  (a YAML file), and the same request that was denied is allowed after the
+  sync.
 
 ## Choosing
 
