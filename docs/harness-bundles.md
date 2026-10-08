@@ -101,7 +101,7 @@ cannot read it.
 
 The installer refuses a bundle whose governed server or plugin names a profile
 the gateway does not serve in that workspace, or one the sandbox has no
-provider for. For a service no profile covers yet (Slack, for instance), add
+provider for. For a service no profile covers yet (Jira, for instance), add
 a profile with a `credentials` entry to `charts/governance-policy/profiles/`
 first. The older `credentialSecret` / `credentialEnvVar` fields are refused:
 they put the real key in the sandbox, where the agent could read it.
