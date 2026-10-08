@@ -1,8 +1,6 @@
 # A personal assistant, fully on-cluster — Secure Agent Workspace
 
-Developed for the GTC Berlin showcase of the Secure Agent Workspace.
-
-This runbook scripts the silent recording of this demo of the Secure
+This walkthrough scripts the demo of the Secure
 Agent Workspace (SAW): a per-user KubeVirt VM running the OpenClaw assistant
 under NVIDIA OpenShell runtime governance, deployed via GitOps on Red Hat
 OpenShift Virtualization. Six beats show (0) what is deployed, (1) the catch-up
@@ -10,7 +8,8 @@ where the agent does real work invisibly securely, (2) a prompt-injection
 attack blocked at the sandbox, (3) rogue-agent containment down to the VM
 layer, (4) a new capability requested and delivered as policy-as-data through
 GitOps, and (5) provisioning a new user workspace through GitOps.
-Recording is silent; add captions later using the per-beat caption suggestions.
+Present it live, record it if you want a reusable take, or walk through it on
+your own — the per-beat talking points work for all three.
 
 **How long it takes**
 
@@ -22,10 +21,19 @@ Recording is silent; add captions later using the per-beat caption suggestions.
 | Two workspaces (alice + bob) | ~15 minutes each, mostly waiting |
 | The demo itself | ~12 to 15 minutes |
 
-Verified on cluster-ldxgj 2026-10-07 (Phase 1d dry-run): all beat commands and
+Verified live 2026-10-07 (Phase 1d dry-run): all beat commands and
 URLs below returned 200 / expected output live unless marked otherwise.
 
-## Prerequisites checklist (verify before recording)
+## Prerequisites checklist (verify before presenting)
+
+- [ ] Set the cluster apps domain (GUID varies per cluster; used throughout
+      this doc — all `apps.<cluster-domain>` references below resolve via
+      `APPS_DOMAIN`):
+
+```bash
+APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}')
+# e.g. apps.cluster-ldxgj.dyn.redhatworkshops.io
+```
 
 - [ ] Cluster healthy: all `saw-*` Argo Applications Healthy in ArgoCD.
 - [ ] VM `workshop` Running in `saw-workshop` ns; installer `apply: Done`.
@@ -38,7 +46,7 @@ URLs below returned 200 / expected output live unless marked otherwise.
       notes and action items") + 1 old dry-run test.
 - [ ] Radicale deployed in `openshell-agents` ns (`demo/charts/radicale`; Service
       `radicale:5232`, Route
-      `radicale-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io`);
+      `radicale-ui-openshell-agents.apps.<cluster-domain>`);
       server Running; collection `/demo/personal/` seeded with 4 events (AI
       Platform sync, GTC Berlin rehearsal, Security review — SAW governance,
       Sprint retrospective).
@@ -46,7 +54,7 @@ URLs below returned 200 / expected output live unless marked otherwise.
       `category: knowledge` (interceptor enum constraint).
 - [ ] Bob's workspace pre-provisioned for the beat-5 cut: VM `bob` in ns
       `saw-bob`, Running/Ready, saw-apply Done; OpenClaw UI route
-      `bob-default-notebook-ui.apps.cluster-ldxgj.dyn.redhatworkshops.io`.
+      `bob-default-notebook-ui.apps.<cluster-domain>`.
 - [ ] Governance interceptor Running with profiles loaded: `brave`, `gemini`,
       `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `tavily`,
       `web-search`.
@@ -65,25 +73,27 @@ URLs below returned 200 / expected output live unless marked otherwise.
 
 ```bash
 # Keycloak realm
-open https://openshell-keycloak-ingress-saw-keycloak.apps.cluster-ldxgj.dyn.redhatworkshops.io/realms/openshell
-# OpenClaw Control UI (oauth2-gated; verified 302 → Keycloak login, all-cluster-ldxgj chain)
-open https://workshop-default-notebook-ui.apps.cluster-ldxgj.dyn.redhatworkshops.io/
+open https://openshell-keycloak-ingress-saw-keycloak.${APPS_DOMAIN}/realms/openshell
+# OpenClaw Control UI (oauth2-gated; verified 302 → Keycloak login chain)
+open https://workshop-default-notebook-ui.${APPS_DOMAIN}/
 # Mailpit UI
-open https://mailpit-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io
+open https://mailpit-ui-openshell-agents.${APPS_DOMAIN}
 # Mattermost UI (LEFT screen for beats 1/2/4/5)
-open https://mattermost-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io
+open https://mattermost-ui-openshell-agents.${APPS_DOMAIN}
 # ArgoCD
-open https://openshift-gitops-server-openshift-gitops.apps.cluster-ldxgj.dyn.redhatworkshops.io
+open https://openshift-gitops-server-openshift-gitops.${APPS_DOMAIN}
 # Radicale UI
-open https://radicale-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io
+open https://radicale-ui-openshell-agents.${APPS_DOMAIN}
 # Bob's OpenClaw UI (beat-5 cut destination)
-open https://bob-default-notebook-ui.apps.cluster-ldxgj.dyn.redhatworkshops.io
+open https://bob-default-notebook-ui.${APPS_DOMAIN}
 ```
 
 - [ ] Terminal ready: `openshell term` TUI connected to the workshop gateway
       (0.1.2-rhaiv.0). Fallback if TUI unavailable: `openshell logs --tail`.
 
-## Recording layout
+## Screen layout
+
+This layout works for a live demo, a recording, or a self-guided walkthrough.
 
 1920x1080, split-screen for all beats:
 - LEFT = browser: Mattermost UI (#ai-platform for beats 1/2, #sandbox-admin for
@@ -103,7 +113,7 @@ WHO: Admin. LEFT: ArgoCD app tree (openshift-gitops URL), then arch diagram
 oc get vmi -n saw-workshop   # VM workshop Running
 ```
 
-Caption: "Everything you are about to see is deployed declaratively via GitOps
+Talking point: "Everything you are about to see is deployed declaratively via GitOps
 — let's look at what's running before we use it."
 
 ## Beat 1 — Back from PTO — the catch-up (~3 min)
@@ -137,7 +147,7 @@ openshell sandbox exec -n notebook -- node -e "fetch('http://mailpit.openshell-a
 - Dry-run evidence: sandbox has no curl/python; if demonstrating reachability
   directly, use `/dev/tcp` probes (see Beat 2).
 
-Caption: "A normal assistant catching you up after PTO — every action checked
+Talking point: "A normal assistant catching you up after PTO — every action checked
 against signed policy; the ALLOWED stream is the audit trail."
 
 ## Beat 2 — The block (~2 min)
@@ -176,7 +186,7 @@ openshell provider create --name evil --type custom --config endpoint=https://at
 LEFT: OpenClaw UI shows the injected attempt failing; RIGHT: TUI log pane
 shows DENIED live; gateway logs show `decision="deny"`.
 
-Caption: "The injection broke the agent's behavior — but the capability was
+Talking point: "The injection broke the agent's behavior — but the capability was
 never granted, so the exfiltration dies at the sandbox proxy."
 
 ## Beat 3 — Rogue containment / VM layer (~2 min)
@@ -201,7 +211,7 @@ Narrative: even if the OpenShell sandbox were bypassed, the KubeVirt VM
 boundary remains — separate kernel and filesystem, blast radius one disposable
 VM. Credentials live in Vault/ESO; only the proxy swaps them in per-request.
 
-Caption: "Fully rogue agent? Unprivileged user, read-only system filesystem,
+Talking point: "Fully rogue agent? Unprivileged user, read-only system filesystem,
 no plaintext keys, and a VM wall underneath it all."
 
 ## Beat 4 — The capability request (~3 min)
@@ -253,9 +263,9 @@ flow is the verified gate. Beat 4 is framed as the CreateProvider gate plus
 the verified attach; no network egress is demonstrated for the new capability
 beyond the in-cluster Radicale fetch. If the gatewayEndpoint fix lands, the
 alternative is: a NEW sandbox inherits the updated policy and egress to the
-new capability succeeds — record that variant instead if available.
+new capability succeeds — present that variant instead if available.
 
-Caption: "A new capability is a one-file commit — reviewed in git, synced by
+Talking point: "A new capability is a one-file commit — reviewed in git, synced by
 ArgoCD, enforced by the interceptor."
 
 ## Beat 5 — Provisioning a new workspace (~2 min with a cut)
@@ -275,18 +285,18 @@ oc -n saw-bob get jobs       # saw-apply Done
 ```
 
 4. CUT (~10 minutes later) to bob's READY workspace: bob's OpenClaw UI at
-   `bob-default-notebook-ui.apps.cluster-ldxgj.dyn.redhatworkshops.io`
+   `bob-default-notebook-ui.apps.<cluster-domain>`
    (pre-provisioned for the cut).
 
 NOTE: bob's workspace was provisioned via the manual Argo app trio
-`saw-bob-ws`/`saw-bob-bom`/`saw-bob-secrets`. Post-recording cleanup: add bob
+`saw-bob-ws`/`saw-bob-bom`/`saw-bob-secrets`. Post-demo cleanup: add bob
 to `overrides/saw-users.yaml` in git and delete the manual trio to return to
 the pattern-managed path.
 
-Caption: "A new teammate gets a governed workspace — requested in the channel,
+Talking point: "A new teammate gets a governed workspace — requested in the channel,
 approved, and delivered by GitOps."
 
-## State-reset checklist between takes
+## State-reset checklist between runs
 
 ```bash
 # Remove probe-created providers (beats 2 and 4)
@@ -305,21 +315,21 @@ openshell sandbox exec -n notebook -- ls /etc/demo-test /usr/demo-test
 # Expected: No such file or directory
 
 # Mailpit: delete the beat-1 catch-up digest alice's agent sent so the next
-# take's arrival is unmistakable, but KEEP the 4 seeded emails:
-curl "https://mailpit-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops.io/api/v1/messages" | jq -r '.messages[] | select(..Subject | contains("catch-up")) | .ID' \
+# run's arrival is unmistakable, but KEEP the 4 seeded emails:
+curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -r '.messages[] | select(..Subject | contains("catch-up")) | .ID' \
   | xargs -I{} curl -X DELETE ".../api/v1/messages/{}"
 # (or delete just the digest via the Mailpit UI)
 
 # Mattermost: restore the #ai-platform injected message if removed during the
-# take (re-post it as the LAST message), and clear the #sandbox-admin requests
+# run (re-post it as the LAST message), and clear the #sandbox-admin requests
 # if posted for beats 4/5 (Mattermost UI).
-# Provider delete/re-create is NOT needed between takes: calendar/mattermost
+# Provider delete/re-create is NOT needed between runs: calendar/mattermost
 # providers persist (no re-attach probes required).
 
 # Radicale: seeded events persist; emptyDir re-seeds on pod recreation.
 
 # TUI log pane: clear filters; re-open live log view
-# ArgoCD: confirm saw-governance-policy Synced before next take
+# ArgoCD: confirm saw-governance-policy Synced before the next run
 ```
 
 ## Recovery notes
@@ -344,7 +354,7 @@ curl "https://mailpit-ui-openshell-agents.apps.cluster-ldxgj.dyn.redhatworkshops
 - TUI unavailable: fall back to `openshell logs --tail` CLI for the admin log
   view.
 - Beat 2 probe unexpectedly succeeds: confirm the interceptor is Running and
-  the fail-closed policy is loaded before re-taking.
+  the fail-closed policy is loaded before re-running.
 - Beat 4 profile still denied after commit: check ArgoCD sync status and wait
   out the 15-60s interceptor propagation; confirm the app tracks the `demo`
   revision (e139418 re-point).

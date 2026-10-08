@@ -4,7 +4,7 @@ Two walks of the SAME personal assistant. The honest axis is the provider
 strategy: point the providers at external accounts, or run the services
 inside the cluster. Choose by what you can set up: accounts or services.
 
-## External providers: real Slack and Gmail
+## Personal Assistant (Quick Demo) with external providers: Slack and Gmail
 
 Step-by-step walkthrough: [personal-assistant-demo.md](personal-assistant-demo.md)
 (how the briefing works under the hood: [daily-briefing.md](daily-briefing.md)).
@@ -18,14 +18,14 @@ Step-by-step walkthrough: [personal-assistant-demo.md](personal-assistant-demo.m
 - Self-service via the Red Hat Developer Hub portal: the user `dana` picks
   the profile, enters her keys, and gets her own workspace.
 
-## On-cluster providers: chat, email and calendar in the cluster
+## Personal Assistant (Longer Setup) with on-cluster providers: chat, email and calendar
 
 Walkthrough: [on-cluster-demo.md](on-cluster-demo.md).
 
 - Chat, email and calendar services (Mattermost, Mailpit, Radicale) run
   inside the cluster, so you stand up three demo services instead: about
   20 minutes, once.
-- More setup overall: services + profile placement + seeding + two
+- Setup: services + profile placement + seeding + two
   workspaces ≈ 1.5 to 2 hours, mostly waiting; the demo itself is ~12 to
   15 minutes.
 - As a consequence of the on-cluster providers, it shows more of the
@@ -38,9 +38,9 @@ Walkthrough: [on-cluster-demo.md](on-cluster-demo.md).
 
 ## Choosing
 
-Short on time? Take the external-providers demo. Want every layer of the
-guardrails on show and can invest in the setup? Take the on-cluster demo.
-Neither is better — same assistant, different provider strategy.
+Short on time? Take the external-providers demo. Want to see every layer of the
+guardrails in detail and can invest in the setup? Take the on-cluster demo.
+Same assistant, different setup times and provider strategies.
 
 ## Charts
 
