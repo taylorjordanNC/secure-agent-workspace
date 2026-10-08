@@ -81,8 +81,9 @@ APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.dom
       `saw-bob` catalog entry appears after the first create-or-update run
       (it does not pre-exist); sign in as `admin` (admin templates visible).
 - [ ] API keys for the beat-5 form at hand: the `data-science` profile
-      requires NVIDIA + Tavily keys (entered into the portal form; stored to
-      Vault).
+      asks for the keys its provider list names — NVIDIA plus the web-search
+      provider (Brave by default, or Tavily if its provider entry is present);
+      entered into the portal form; stored to Vault.
 - [ ] Governance interceptor Running with profiles loaded: `brave`, `gemini`,
       `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `tavily`,
       `web-search`.
@@ -307,7 +308,8 @@ UI (#sandbox-admin) + editor + ArgoCD UI. RIGHT: terminal.
 2. Admin approves the request in the channel (Mattermost UI).
 3. Admin commits a new provider profile to git (demo branch):
    `charts/governance-policy/profiles/calendar.yaml`, push to the tracked
-   branch (see docs/deployment-guide-fork.md:681-685 for fork-remote push).
+   branch (the profile mechanics — drop the file, commit, wait for the
+   Argo CD sync — are documented in docs/governance-interceptor.md).
 4. LEFT: ArgoCD UI shows the `saw-governance-policy` Application sync.
    Re-point context: the saw-governance-policy Argo app tracks
    secure-agent-workspace @ `demo` (via rhai-agent-security values, commit
@@ -361,8 +363,8 @@ WHO: Admin. LEFT: Mattermost UI (#sandbox-admin) → RHDH portal → ArgoCD
 3. Admin opens the portal
    (`https://backstage-developer-hub-rhdh.apps.${APPS_DOMAIN}`) and signs in
    as `admin` → **Create** → **Create or update an agent workspace for a
-   user** → user `bob`, profile `data-science`, enters the NVIDIA + Tavily
-   keys → **Review** → **Create**.
+   user** → user `bob`, profile `data-science`, enters the profile's provider keys
+   (NVIDIA + web-search) → **Review** → **Create**.
 4. The run page shows the 5 pipeline steps: "Verify the request, store the
    keys, register the workspace" → "Argo CD creates the workspace's
    applications" → "Argo CD creates the VM" → "Start the VM" → "Install
