@@ -52,7 +52,7 @@ spec:
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider nvidia)}
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
-                in Vault for your workspace only (provider brave)}
+                in Vault for your workspace only (provider tavily)}
           required: [inference__api_key, web_search__api_key]
         - properties:
             profile: {const: personal-assistant}
