@@ -81,8 +81,32 @@ Used to add the route FQDN to the gateway TLS certificate SANs.
 {{- end }}
 
 {{/*
-Resolve the golden image DataSource name.
-Priority: explicit source.dataSource > derived from containerRuntime.
+Where the VM's root disk comes from, made once when the disk does not exist:
+"registry" (source.registryURL, or by default the golden image in the
+internal registry), "http" (source.httpURL), or "dataSource" (a clone of
+source.dataSource, which must exist). No Job: KubeVirt and CDI do it all.
+*/}}
+{{- define "openshell-sandbox.diskSource" -}}
+{{- if .Values.source.registryURL -}}registry
+{{- else if .Values.source.httpURL -}}http
+{{- else if .Values.source.dataSource -}}dataSource
+{{- else -}}registry
+{{- end -}}
+{{- end }}
+
+{{/*
+The registry image the root disk is imported from: source.registryURL, else
+the golden image in the internal registry,
+<source.dataSourceNamespace>/<golden name>:latest (built by
+openshell-gateway-image, or mirrored by make copy-images).
+*/}}
+{{- define "openshell-sandbox.diskImageURL" -}}
+{{- .Values.source.registryURL | default .Values.source.goldenImageURL | default (printf "docker://%s/%s/%s:latest" .Values.source.internalRegistry (include "openshell-sandbox.goldenNamespace" .) (include "openshell-sandbox.dataSourceName" .)) -}}
+{{- end }}
+
+{{/*
+The golden image name: the DataSource to clone, and the internal registry
+image. Priority: explicit source.dataSource > derived from containerRuntime.
 */}}
 {{- define "openshell-sandbox.dataSourceName" -}}
 {{- if .Values.source.dataSource -}}
@@ -143,13 +167,6 @@ Governance interceptor gRPC endpoint reachable from the VM.
 {{- end }}
 
 {{/*
-Namespace of Keycloak's "<keycloakName>-initial-admin" Secret.
-*/}}
-{{- define "openshell-sandbox.keycloakNamespace" -}}
-{{- .Values.dashboard.keycloakNamespace | default .Values.oidc.keycloakNamespace | default .Release.Namespace -}}
-{{- end }}
-
-{{/*
 Namespace of the golden image DataSource.
 */}}
 {{- define "openshell-sandbox.goldenNamespace" -}}
@@ -165,7 +182,23 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- range .Values.additionalProviderSecrets -}}
   {{- if and . (not (has . $names)) -}}{{- $names = append $names . -}}{{- end -}}
 {{- end -}}
+{{- with include "openshell-sandbox.caBundleSecret" . -}}
+  {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
+{{- end -}}
 {{- toJson $names -}}
+{{- end }}
+
+{{/*
+The Secret holding the cluster's ingress CA (key ca-bundle.crt) the VM trusts
+for the issuer, or "". Only for the in-cluster Keycloak (oidc.issuerUrl
+empty) and only when no explicit oidc.caBundle is set: an external issuer has
+nothing to do with the cluster's ingress CA. Attached like the provider
+Secrets (secret disk, mounted under /run/saw/secrets/<name>).
+*/}}
+{{- define "openshell-sandbox.caBundleSecret" -}}
+{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- .Values.oidc.clusterCaSecret -}}
+{{- end -}}
 {{- end }}
 
 {{/*

@@ -13,29 +13,38 @@ sshPublicKeySecret: ""
 # Optional: seed the chart-created Secret with one key (key1).
 sshPublicKey: ""
 
-# VM disk source — three modes:
+# VM root disk source. The disk is made once, when it does not exist; changing
+# the source later does not touch an existing VM's disk. Nothing runs in the
+# namespace for it (no Job): KubeVirt and CDI import or clone it.
 #
-# 1. DataSource (default): clone from a golden image DataSource (created by the
-#    openshell-gateway-image chart or CDI DataImportCron).
+# 1. Registry (default): import the golden image into the VM's own disk.
+#    Without registryURL, the internal registry's
+#    <dataSourceNamespace>/openshell-gateway:latest (make copy-images, or the
+#    openshell-gateway-image build); the namespace may pull it from there.
+#      source:
+#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway@sha256:<digest>"
+#
+# 2. DataSource: clone a golden image DataSource that already exists (the
+#    openshell-gateway-image chart's goldenImage, or a CDI DataImportCron).
 #      source:
 #        dataSource: openshell-gateway
 #        dataSourceNamespace: openshell-agents
 #
-# 2. Registry: import a bootc/containerDisk image directly from a container registry.
-#      source:
-#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway:latest"
-#
-# 3. HTTP: download a qcow2 disk image from a URL.
+# 3. HTTP: download a qcow2 disk image from a URL (the VM's namespace must
+#    reach that host; see egress).
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:
-  # Leave empty for the default "openshell-gateway" DataSource.
+  # Set to clone this DataSource instead of importing (mode 2).
   dataSource: ""
+  # The shared namespace of the golden image (its DataSource, or its image
+  # in the internal registry).
   dataSourceNamespace: "openshell-agents"
-  # Registry URL for golden image import. Used by the prepare Job to bootstrap
-  # the DataSource on first run. Defaults to the internal registry.
+  # Older name for registryURL.
   goldenImageURL: ""
-  # CDI pull method: "node" (uses node runtime, trusts internal CA) or "pod" (CDI importer pod)
+  internalRegistry: "image-registry.openshift-image-registry.svc:5000"
+  # CDI pull method: "node" (the node's runtime pulls, trusts the internal
+  # registry's CA, caches the image) or "pod" (the CDI importer pod).
   pullMethod: "node"
   registryURL: ""
   httpURL: ""
@@ -118,6 +127,10 @@ harness:
   cosign:
     identity: ""
     issuer: "https://token.actions.githubusercontent.com"
+    # Reuse successful digest verification for at most five minutes. Identity
+    # or issuer changes invalidate it immediately; 0 checks every apply.
+    # Expired verification requires registry/Sigstore access and fails closed.
+    cacheTtlSeconds: 300
 
 # Dropping an object from a SAW-BOM profile. report only logs what would be
 # deleted. on deletes it. Sandboxes are kept unless sandboxes is true, because
@@ -133,9 +146,9 @@ internalRegistry:
   allowAnonymousPull: false
 
 # Provider credential Secrets. Every `credentialSecret:` named in a SAW-BOM
-# profile must be listed here (or be inference.secretName). Each Secret is
-# attached to the VM as a read-only disk; a missing Secret is attached empty,
-# and the installer then reports which provider has no credential.
+# profile must be listed here (or be inference.secretName). The VM waits
+# until each listed Secret exists. A Secret that changes after boot still
+# needs a VM restart (`vm.liveInputs` shares the files over virtiofs instead).
 inference:
   secretName: "inference"
 additionalProviderSecrets:
@@ -155,6 +168,25 @@ oidc:
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"
   userRole: "openshell-user"
+  # Extra CAs (PEM) the gateway and the oauth2-proxies trust for the issuer,
+  # never the VM's system trust store; a private key in it is refused. The
+  # gateway fetches the issuer at startup and exits when it cannot verify its
+  # certificate. Only needed when the issuer's certificate is not from a
+  # public CA. For the in-cluster
+  # Keycloak on a cluster with OpenShift's self-signed *.apps certificate the
+  # pattern does it for you (clusterCaSecret below); set caBundle for an
+  # external issuer (issuerUrl) with a private CA, e.g. your corporate root CA,
+  # or for the quickstart. Wins over clusterCaSecret. See
+  # docs/deployment-guide.md, "The issuer's certificate".
+  caBundle: ""
+  # For the in-cluster Keycloak (issuerUrl empty) and no caBundle: a Secret in
+  # this namespace with the cluster's ingress CA (key ca-bundle.crt), which
+  # the VM trusts. Needed when the cluster's *.apps certificate is not from a
+  # public CA (OpenShift's self-signed default); harmless otherwise. The
+  # pattern fills it in every user namespace (saw-users sets
+  # saw-ingress-ca; the saw-ingress-ca imperative job and pattern-secrets).
+  # The VM waits for the Secret to exist, like the provider Secrets.
+  clusterCaSecret: ""
 
 # Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's
 # OIDC subject (`openshell whoami`) and, when set, is added as admin to every
@@ -207,9 +239,10 @@ dashboard:
   image: "quay.io/gkrumbach07/openshell-dashboard@sha256:ec9df77cfcbb4a8e5ac6ad59b00bd61e99a1dec43164d259c52cb7568e224101"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
-  # Override the Keycloak namespace for the admin Secret lookup only.
-  # Empty = oidc.keycloakNamespace.
-  keycloakNamespace: ""
+  # The dashboard and sandbox-UI oauth2-proxies verify the issuer: with the
+  # issuer CA (oidc.caBundle / oidc.clusterCaSecret) when one is configured,
+  # else with the image's public CAs.
+  # Skipping verification is only for debugging.
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
@@ -219,9 +252,11 @@ dashboard:
 # gateway keeps resource admission on and bind mounts off, so a caller can
 # only attach a podman volume labelled openshell.ai/sandbox-attachable for
 # its own workspace (the installer labels each harness volume that way);
-# image and host-path mounts stay refused. Default off: turning it on lets
-# any signed-in user attach a labelled volume to a sandbox they create, so
-# set true only when a selected profile has a sandbox with a harnessRef
+# image and host-path mounts stay refused. With governance enabled, the
+# interceptor additionally requires an mTLS admin and exactly the installer's
+# read-only harness volume/target. Keep governance fail-closed when enabling
+# this switch; without it the gateway switch applies to all callers.
+# Default off: set true only when a selected profile has a harnessRef
 # (e.g. saw-bom's harnessEnabled). The installer fails fast with a clear error
 # if a harnessRef is applied while this is off.
 allowDriverConfig: false
@@ -243,15 +278,9 @@ governance:
 # user from the list keeps their VM unless pruneOnRemove is true.
 cleanupOnDelete: true
 
-# Cluster-side prepare Job. It never logs in to the VM: it only bootstraps
-# the golden image DataSource and registers the dashboard redirect URI in
-# Keycloak.
+# The pre-delete cleanup pod (cleanupOnDelete). There is no prepare Job.
 job:
   image: "registry.fedoraproject.org/fedora:44"
-  backoffLimit: 2
-  activeDeadlineSeconds: 1800
-  # Wait for ESO-managed secrets before starting the prepare Job.
-  waitForSecrets: false
 
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
