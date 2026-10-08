@@ -97,11 +97,11 @@ source.dataSource, which must exist). No Job: KubeVirt and CDI do it all.
 {{/*
 The registry image the root disk is imported from: source.registryURL, else
 the golden image in the internal registry,
-<source.dataSourceNamespace>/<golden name>:latest (built by
-openshell-gateway-image, or mirrored by make copy-images).
+<source.dataSourceNamespace>/<golden name>:<source.goldenImageTag> (mirrored
+by scripts/mirror-images-incluster.sh, which tags OPENSHELL_VERSION).
 */}}
 {{- define "openshell-sandbox.diskImageURL" -}}
-{{- .Values.source.registryURL | default .Values.source.goldenImageURL | default (printf "docker://%s/%s/%s:latest" .Values.source.internalRegistry (include "openshell-sandbox.goldenNamespace" .) (include "openshell-sandbox.dataSourceName" .)) -}}
+{{- .Values.source.registryURL | default .Values.source.goldenImageURL | default (printf "docker://%s/%s/%s:%s" .Values.source.internalRegistry (include "openshell-sandbox.goldenNamespace" .) (include "openshell-sandbox.dataSourceName" .) .Values.source.goldenImageTag) -}}
 {{- end }}
 
 {{/*

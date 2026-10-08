@@ -510,7 +510,7 @@ def test_the_root_disk_is_imported_from_the_golden_image_by_default():
     golden image from the internal registry, which the namespace may pull."""
     docs = all_docs()
     assert root_source(docs)["source"] == {"registry": {
-        "url": "docker://image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest",
+        "url": "docker://image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:v0.0.116",
         "pullMethod": "node"}}
     shared = [d for d in docs if d["metadata"].get("namespace") == "openshell-agents"]
     assert [(d["kind"], d["metadata"]["name"]) for d in shared] == [
