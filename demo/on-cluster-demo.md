@@ -82,8 +82,8 @@ APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.dom
       (it does not pre-exist); sign in as `admin` (admin templates visible).
 - [ ] API keys for the beat-5 form at hand: the `data-science` profile
       asks for the keys its provider list names — NVIDIA plus the web-search
-      provider (Brave by default, or Tavily if its provider entry is present);
-      entered into the portal form; stored to Vault.
+      provider (Brave by default); entered into the portal form; stored to
+      Vault.
 - [ ] Governance interceptor Running with profiles loaded: `brave`, `gemini`,
       `github`, `mailpit`, `mattermost`, `nvidia`, `openai`, `tavily`,
       `web-search`.
