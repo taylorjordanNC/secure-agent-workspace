@@ -185,8 +185,8 @@ make generate-keys
 # template; edit it to add your inference and web-search keys. The Validated
 # Patterns framework reads ~/values-secret-secure-agent-workspace.yaml before ~/values-secret.yaml,
 # so the pattern-named file wins when both exist.
-# The default profile needs an NVIDIA key and a Brave Search key:
-#   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
+# The default profile needs an NVIDIA key and a Tavily search key:
+#   ~/.nvidia-api-key and ~/.tavily-api-key (one line each, chmod 600)
 
 # 5. Copy pre-built images to the cluster (~5 min)
 # Mirrors images from quay.io/rh-ai-quickstart to the internal registry.
@@ -266,12 +266,12 @@ make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
 #     Keys come from files so they stay out of the shell history.
-#     The default data-science profile also creates a Brave Search provider,
+#     The default data-science profile also creates a Tavily search provider,
 #     so it needs WEB_SEARCH_API_KEY; without it the in-VM apply fails with
-#     "credential for provider 'brave' in workspace 'default' not found".
+#     "credential for provider 'tavily' in workspace 'default' not found".
 #     The target asks "Press Enter to set owner to '<you>', ..."; press Enter.
 #     To create a VM for someone else, pass OWNER=<name> OWNER_SUBJECT=<keycloak-user-id>.
-WEB_SEARCH_API_KEY="$(cat ~/.brave-api-key)" \
+WEB_SEARCH_API_KEY="$(cat ~/.tavily-api-key)" \
 make openshell-saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3-super-120b-a12b \

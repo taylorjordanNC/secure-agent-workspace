@@ -168,7 +168,7 @@ oc logs -n saw-portal deploy/saw-workspaces-generator --tail=20
 2. **Profile**: pick one, e.g. `data-science`. The form now asks only for
    that profile's keys:
    - `inference: API key`: the NVIDIA API key (build.nvidia.com);
-   - `web-search: API key`: the Brave Search API key.
+   - `web-search: API key`: the Tavily API key.
 
    "Sandbox web UIs" lists the sandboxes that get their own route
    (`notebook (default)`).

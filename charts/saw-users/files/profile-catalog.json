@@ -86,9 +86,9 @@
               "title": "API key"
             }
           ],
-          "provider": "brave",
+          "provider": "tavily",
           "providers": [
-            "brave"
+            "tavily"
           ]
         }
       },

@@ -122,7 +122,7 @@ charts/saw-bom/profiles/
     │   └── sandbox.yaml             # Sandbox definitions (nemoclaw, generic)
     └── default/                     # Workspace
         ├── workspace.yaml           # Uses existing 'default' workspace
-        ├── providers.yaml           # Provider definitions (nvidia, brave)
+        ├── providers.yaml           # Provider definitions (nvidia, tavily)
         └── sandbox.yaml             # Sandbox definitions (openclaw)
 ```
 
