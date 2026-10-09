@@ -27,6 +27,29 @@ briefing. No prior knowledge of this repository is assumed.
 
 Do the first three parts before your audience arrives.
 
+## Prerequisites beyond the pattern install
+
+`./pattern.sh make install` deploys the platform, but a fresh deployer must
+still do these things by hand, in this order:
+
+1. **Golden image** — run `make copy-images` (Step 5) **before** the install:
+   it mirrors the golden image into the cluster's internal registry, and the
+   VM cannot boot without it.
+2. **Secrets load ordering** — `./pattern.sh make load-secrets` can die in
+   the Vault auth-policy retry loop if Vault has not finished unsealing and
+   configuring; if the first run fails, re-run it once Vault is up. The
+   reliable fallback is `./scripts/seed-vault.sh`, which seeds Vault via
+   `oc exec` using the `vault-init` Secret's root token.
+3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
+   `make -f Makefile-quickstart keycloak-add-users` for each user in
+   `overrides/saw-users.yaml` (`alice` and `carol` today), plus `dana` for
+   this demo (Step 6).
+4. **Gmail/Slack credentials** — the external accounts from Step 2: a Slack
+   bot token (or token rotation), and a Google OAuth client + refresh token
+   (which expires after 7 days while the consent screen is in Testing).
+
+**Order:** `copy-images` → install → secrets → Keycloak users → walkthrough.
+
 ---
 
 ## Step 1. Check what you need

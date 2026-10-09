@@ -24,6 +24,42 @@ your own.
 | Self-service portal one-time setup (operators + chart + Vault + client job) | ~20 to 30 minutes, mostly operator CSVs and the backstage dynamic-plugins init |
 | The demo itself | ~12 to 15 minutes |
 
+## Prerequisites beyond the pattern install
+
+`./pattern.sh make install` deploys the platform, but a fresh deployer must
+still do these things by hand, in this order:
+
+1. **Golden image** — run `make copy-images` (mirror the golden image into
+   the cluster's internal registry) **before** the install: the VM cannot
+   boot without it.
+2. **Secrets load ordering** — `./pattern.sh make load-secrets` can die in
+   the Vault auth-policy retry loop if Vault has not finished unsealing and
+   configuring; if the first run fails, re-run it once Vault is up. The
+   reliable fallback is `./scripts/seed-vault.sh`, which seeds Vault via
+   `oc exec` using the `vault-init` Secret's root token.
+3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
+   `make -f Makefile-quickstart keycloak-add-users` for each user in
+   `overrides/saw-users.yaml` (`alice` and `carol` — note `carol`: she is
+   the personal-assistant user on this track and does not appear elsewhere
+   in this doc).
+4. **Demo services** (Mailpit/Mattermost/Radicale) — NOT installed by the
+   pattern. Deploy them with the standalone helm installs from
+   [README.md](README.md#charts):
+
+```bash
+helm install mailpit demo/charts/mailpit -n openshell-agents
+helm install radicale demo/charts/radicale -n openshell-agents
+helm install mattermost demo/charts/mattermost -n openshell-agents
+```
+
+   Then seed the content the walkthrough prescribes: the Mailpit inbox
+   emails, the Radicale events and the Mattermost channels/messages listed
+   in the [Prerequisites checklist](#prerequisites-checklist-verify-before-presenting)
+   below.
+
+**Order:** `copy-images` → install → secrets → Keycloak users → demo
+services → walkthrough beats.
+
 ## Prerequisites checklist (verify before presenting)
 
 - [ ] Set the cluster apps domain (GUID varies per cluster; used throughout
