@@ -72,7 +72,7 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     assert alice_ns["labels"] == {
         "openshell.pattern/saw": "true",
         "openshell.pattern/owner": "alice",
-        "argocd.argoproj.io/managed-by": "vp-gitops",
+        "argocd.argoproj.io/managed-by": "openshift-gitops",
     }
     assert alice_ns["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
     assert alice_ns["annotations"]["argocd.argoproj.io/sync-options"] == "Prune=false"
@@ -84,7 +84,7 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
     ]
     for name in names:
         application = app(docs, name)
-        assert application["metadata"]["namespace"] == "vp-gitops"
+        assert application["metadata"]["namespace"] == "openshift-gitops"
         assert "finalizers" not in application["metadata"]
         assert application["spec"]["destination"]["name"] == "in-cluster"
         assert application["spec"]["syncPolicy"] == {"automated": {"selfHeal": True},

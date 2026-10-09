@@ -4,7 +4,7 @@ source cannot be resolved. Applications must land in the namespace Argo CD
 watches, not in whatever namespace this chart happens to be released into.
 */}}
 {{- define "saw-users.validate" -}}
-{{- $argoNS := .Values.global.vpArgoNamespace | default .Values.argo.namespace -}}
+{{- $argoNS := .Values.global.vpArgoNamespace | default .Values.global.namespace | default .Values.argo.namespace -}}
 {{- if not $argoNS -}}
 {{- fail "set global.vpArgoNamespace or argo.namespace so Applications are created in the Argo CD namespace" -}}
 {{- end -}}
@@ -38,7 +38,7 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- end -}}
 
 {{- define "saw-users.argoNamespace" -}}
-{{- .Values.global.vpArgoNamespace | default .Values.argo.namespace -}}
+{{- .Values.global.vpArgoNamespace | default .Values.global.namespace | default .Values.argo.namespace -}}
 {{- end -}}
 
 {{/*

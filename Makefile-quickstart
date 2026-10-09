@@ -268,8 +268,8 @@ clean-stale-operators:
 		oc patch crd "$$crd" --type json -p '[{"op":"replace","path":"/spec/conversion","value":{"strategy":"None"}}]' 2>/dev/null || true; \
 		oc delete crd "$$crd" 2>/dev/null || true; \
 	done
-	@for app in $$(oc get application -n vp-gitops -o name 2>/dev/null); do \
-		oc patch $$app -n vp-gitops --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	@for app in $$(oc get application -n openshift-gitops -o name 2>/dev/null); do \
+		oc patch $$app -n openshift-gitops --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
 	done
 	@echo "Stale operator cleanup done."
 

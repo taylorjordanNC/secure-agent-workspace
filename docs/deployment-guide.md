@@ -149,7 +149,7 @@ a plain `oc delete application` would also delete the ExternalSecrets and the
 `saw-bom-profiles` ConfigMap that the new applications now use.
 
 ```bash
-ARGO_NS=vp-gitops   # the pattern's Argo CD namespace (global.vpArgoNamespace)
+ARGO_NS=openshift-gitops   # the pattern's Argo CD namespace (global.namespace; vpArgoNamespace is an explicit override)
 for app in openshell-saw saw-bom pattern-secrets; do
   oc -n "$ARGO_NS" patch application "$app" --type json \
     -p '[{"op":"remove","path":"/metadata/finalizers"}]'

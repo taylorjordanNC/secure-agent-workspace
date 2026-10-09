@@ -44,7 +44,7 @@ wait_for_sync() {
   local expected_key="${1:-}"
   local expected_action="${2:-}"
   echo "  Waiting for ArgoCD to sync..."
-  oc annotate application governance-policy -n vp-gitops \
+  oc annotate application governance-policy -n openshift-gitops \
     argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
 
   local profile_name="${expected_key%.yaml}"

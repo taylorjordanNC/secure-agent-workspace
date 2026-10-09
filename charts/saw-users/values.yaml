@@ -59,9 +59,11 @@ sandboxUi:
 namespaceLabels: {}
 
 # Where the generated Application objects are stored. The pattern injects
-# global.vpArgoNamespace; argo.namespace is the fallback for helm template.
+# global.namespace (the pattern's namespace, which OpenShift GitOps clusters
+# watch); global.vpArgoNamespace is an explicit override and argo.namespace
+# is the fallback for helm template.
 argo:
-  namespace: vp-gitops
+  namespace: openshift-gitops
   project: default
   destinationName: in-cluster
   retryLimit: 20
@@ -86,4 +88,3 @@ global:
   targetRevision: main
   clusterDomain: example.com
   pattern: secure-agent-workspace
-  vpArgoNamespace: vp-gitops
