@@ -64,6 +64,15 @@ endpoints:
       - allow:
           method: GET
           path: /api/conversations.replies
+  # OpenClaw installs provider plugins (e.g. @openclaw/slack) from the npm
+  # registry at gateway startup. Without this allowance the CLI's startup
+  # migrations fail ("npm view failed") and the gateway refuses to report
+  # ready (observed on-cluster).
+  - host: registry.npmjs.org
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
 binaries:
   - /usr/bin/curl
   - /usr/local/bin/curl
