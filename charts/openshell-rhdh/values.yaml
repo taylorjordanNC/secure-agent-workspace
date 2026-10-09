@@ -160,9 +160,9 @@ vault:
   prefixBase: hub
 
 # The ApplicationSet that builds a workspace per registry entry. It lives in
-# the pattern's Argo CD namespace (global.vpArgoNamespace) unless namespace
-# is set, and needs that Argo CD's ApplicationSet controller
-# (`oc get argocd -n vp-gitops -o jsonpath='{.items[0].spec.applicationSet}'`).
+# the Argo CD namespace Argo CD watches (global.vpArgoNamespace) unless
+# namespace is set, and needs that Argo CD's ApplicationSet controller
+# (`oc get argocd -n openshift-gitops -o jsonpath='{.items[0].spec.applicationSet}'`).
 applicationSet:
   namespace: ""
   project: default
@@ -177,4 +177,4 @@ global:
   targetRevision: main
   clusterDomain: example.com
   pattern: secure-agent-workspace
-  vpArgoNamespace: vp-gitops
+  vpArgoNamespace: openshift-gitops

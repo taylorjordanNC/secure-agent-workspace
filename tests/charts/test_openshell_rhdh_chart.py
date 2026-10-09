@@ -103,7 +103,7 @@ def test_admission_pins_the_pipeline_runs(docs):
 
 def test_the_applicationset_renders_saw_users_per_workspace(docs):
     aset = one(docs, "ApplicationSet", "saw-portal-workspaces")
-    assert aset["metadata"]["namespace"] == "vp-gitops"
+    assert aset["metadata"]["namespace"] == "openshift-gitops"
     template = aset["spec"]["template"]
     # Not saw-*: saw-users names a user's apps saw-<u>, saw-<u>-bom, saw-<u>-secrets.
     assert template["metadata"]["name"] == "portal-ws-{{ .name }}"
@@ -124,7 +124,7 @@ def test_the_generator_gets_valid_saw_users_defaults(docs):
     env = {e["name"]: e.get("value") for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
     values = json.loads(env["SAW_USERS_VALUES"])
     assert values["namespaceLabels"] == {"saw.redhat.com/portal": "true"}
-    assert values["global"]["vpArgoNamespace"] == "vp-gitops"
+    assert values["global"]["vpArgoNamespace"] == "openshift-gitops"
 
 
 def test_the_pipeline_task_runs_portal_py(docs):
@@ -139,7 +139,7 @@ def test_the_pipeline_task_runs_portal_py(docs):
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert "verifyToken" not in values["portal"]
     assert env["RHDH_INTERNAL_URL"] == "http://backstage-developer-hub.rhdh.svc:80"
-    assert env["ARGO_NAMESPACE"] == "vp-gitops"
+    assert env["ARGO_NAMESPACE"] == "openshift-gitops"
     assert env["RESULT_PATH"] == "$(results.user.path)"
     assert env["PIPELINE_RUN"] == "$(context.pipelineRun.name)"
     scripts = one(docs, "ConfigMap", "saw-portal-scripts")
@@ -212,7 +212,7 @@ def test_the_provisioner_may_delete_only_portal_applications(docs):
     assert "oldObject.metadata.labels['saw.redhat.com/portal'] == 'true'" in expr
     assert "startsWith('portal-ws-')" in expr
     role = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "saw-portal-provisioner"
-            and d["metadata"]["namespace"] == "vp-gitops"]
+            and d["metadata"]["namespace"] == "openshift-gitops"]
     assert role and role[0]["rules"] == [{"apiGroups": ["argoproj.io"], "resources": ["applications"],
                                           "verbs": ["get", "delete"]}]
 
@@ -247,7 +247,7 @@ def test_only_rhdh_and_argo_cd_reach_the_generator(docs):
     assert policy["spec"]["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "saw-workspaces-generator"}}
     sources = [f["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
                for f in policy["spec"]["ingress"][0]["from"]]
-    assert sources == ["rhdh", "vp-gitops"]
+    assert sources == ["rhdh", "openshift-gitops"]
     assert policy["spec"]["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 4355}]
     off = render("--set", "portal.generator.networkPolicy=false")
     assert not [d for d in off if d["kind"] == "NetworkPolicy"]
@@ -344,10 +344,10 @@ def test_the_generator_may_only_read_progress(docs):
     assert vm == [{"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines"], "verbs": ["get"]}]
     assert verbs == {("saw-portal", "", "configmaps", "get"), ("saw-portal", "", "configmaps", "list"),
                      ("saw-portal", "tekton.dev", "pipelineruns", "get"), ("saw-portal", "", "pods", "list"),
-                     ("saw-portal", "", "pods/log", "get"), ("vp-gitops", "argoproj.io", "applications", "get")}
+                     ("saw-portal", "", "pods/log", "get"), ("openshift-gitops", "argoproj.io", "applications", "get")}
     env = {e["name"]: e["value"] for e in one(docs, "Deployment", "saw-workspaces-generator")
            ["spec"]["template"]["spec"]["containers"][0]["env"]}
-    assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")
+    assert env["ARGO_NAMESPACE"] == "openshift-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")
 
 
 def test_the_sidebar_hides_what_the_portal_does_not_use(docs):

@@ -1,6 +1,7 @@
 global:
   pattern: secure-agent-workspace
   singleArgoCD: true
+  vpArgoNamespace: openshift-gitops
   sshPublicKey: ""
   secretLoader:
     disabled: false

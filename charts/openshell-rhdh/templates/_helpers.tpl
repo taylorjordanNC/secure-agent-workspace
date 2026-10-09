@@ -98,7 +98,7 @@ Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}
 {{- end -}}
 
 {{- define "openshell-rhdh.argoNamespace" -}}
-{{- .Values.applicationSet.namespace | default .Values.global.vpArgoNamespace | default "vp-gitops" -}}
+{{- .Values.applicationSet.namespace | default .Values.global.vpArgoNamespace | default "openshift-gitops" -}}
 {{- end -}}
 
 {{/*
@@ -115,7 +115,7 @@ from the release is enough and keeps renders stable.
 {{- $v := deepCopy (.Values.sawUsers | default dict) -}}
 {{- $g := dict "repoURL" .Values.global.repoURL "targetRevision" .Values.global.targetRevision
       "clusterDomain" .Values.global.clusterDomain "pattern" (.Values.global.pattern | default "secure-agent-workspace")
-      "vpArgoNamespace" (.Values.global.vpArgoNamespace | default "vp-gitops") -}}
+      "vpArgoNamespace" (.Values.global.vpArgoNamespace | default "openshift-gitops") -}}
 {{- if .Values.global.sshPublicKey -}}{{- $_ := set $g "sshPublicKey" .Values.global.sshPublicKey -}}{{- end -}}
 {{- $_ := set $v "global" $g -}}
 {{- $labels := deepCopy (index $v "namespaceLabels" | default dict) -}}
