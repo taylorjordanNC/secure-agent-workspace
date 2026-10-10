@@ -37,9 +37,14 @@ still do these things by hand, in this order:
    VM cannot boot without it.
 2. **Secrets load ordering** — `./pattern.sh make load-secrets` can die in
    the Vault auth-policy retry loop if Vault has not finished unsealing and
-   configuring; if the first run fails, re-run it once Vault is up. The
-   reliable fallback is `./scripts/seed-vault.sh`, which seeds Vault via
-   `oc exec` using the `vault-init` Secret's root token.
+   configuring; if the first run fails, re-run it once Vault is up.
+   `./scripts/seed-vault.sh` (which seeds Vault via `oc exec` using the
+   `vault-init` Secret's root token) is safe on a fresh cluster, but a
+   full-file run overwrites every Vault secret the values file names —
+   including writing empty strings for generated fields — which would wipe
+   existing secrets like the `keycloak-users` passwords. Run it only on a
+   fresh cluster, or with a narrow filtered values file that lists only the
+   keys you intend to (re)seed.
 3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
    `keycloak-add-user` (Step 6) for each user in `overrides/saw-users.yaml`
    (none on the `demo` branch today), plus `dana` for this demo (Step 6).
@@ -325,6 +330,7 @@ Point out along the way:
 | "Invalid parameter: redirect_uri" | Wait a minute and reload; or `make -f Makefile-quickstart keycloak-register KC_USER=dana` |
 | The briefing has no Gmail messages | The Google refresh token expired (7 days in Testing). Get a new one (Step 2), then update dana's workspace in the portal with **Create or update my agent workspace** |
 | The briefing has no Slack messages | The app is not in the channel: `/invite @<app>` |
+| The briefing has empty Slack and Email sections (a template) | The sandbox's OpenClaw (2026.7.1) may not load the briefing's tools. See [daily-briefing.md](daily-briefing.md) Limits. |
 | The assistant URL shows 502 after the workspace is ready | The sandbox's OpenClaw gateway may refuse to start while it tries to auto-install a Slack plugin over the egress proxy (scoped npm URLs are reset). Check the gateway log in the sandbox for "Failed to install missing configured plugin". Fix: in `/sandbox/.openclaw/openclaw.json`, set `"channels": {"defaults": {}, "slack": {"enabled": false}}` (keep the rest of the file intact), then re-apply the in-VM installer (`systemctl restart saw-apply.service`). Re-applying re-creates the sandbox and wipes `/sandbox`, so re-apply the patch if that happens. |
 
 More checks, for administrators with the `openshell` CLI:

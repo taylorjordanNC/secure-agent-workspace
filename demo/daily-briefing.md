@@ -107,6 +107,12 @@ openshell logs assistant --workspace personal-assistant --source sandbox
   template with empty Slack/Email sections until this skew is resolved.
   The schedule uses the agent's `cron` tool; if that OpenClaw has none,
   schedule the update from the OpenClaw UI's cron page.
+- The sandbox gateway can hang and die mid-conversation: a model call through
+  the egress proxy can stall with no timeout. Re-run the in-VM installer apply
+  (`systemctl restart saw-apply.service`) and continue — the agent's sessions
+  live on disk and survive. Note: re-applying the installer re-creates the
+  sandbox if it is broken, which wipes `/sandbox` (the briefing state), not
+  the sessions.
 - The egress proxy resets scoped npm URLs (`%2f`): if OpenClaw logs
   "Failed to install missing configured plugin 'slack'", disable the
   `slack` channel in `openclaw.json`
