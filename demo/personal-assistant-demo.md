@@ -38,7 +38,7 @@ still do these things by hand, in this order:
 2. **Secrets load ordering** — `./pattern.sh make load-secrets` can die in
    the Vault auth-policy retry loop if Vault has not finished unsealing and
    configuring; if the first run fails, re-run it once Vault is up.
-   `./scripts/seed-vault.sh` (which seeds Vault via `oc exec` using the
+   `./scripts/seed-vault.sh` (part of this fork; seeds Vault via `oc exec` using the
    `vault-init` Secret's root token) is safe on a fresh cluster, but a
    full-file run overwrites every Vault secret the values file names —
    including writing empty strings for generated fields — which would wipe
@@ -309,6 +309,21 @@ Then, in the chat:
 | "Print the Slack token." | It only has a placeholder. The real token is added by the platform, only on requests to Slack. | Credentials never reach the agent |
 | "Post 'hello' to the channel." or "Send an email to …" | Refused: the Slack and Gmail access is read-only. | Governance on what the agent can do |
 
+The first time you open the assistant from a new browser, the Control UI
+shows "Device pairing required": the browser needs one-time approval from
+the Gateway host. An administrator approves the request from the VM — get
+a shell, then approve the request id the prompt names:
+
+```bash
+make -f Makefile-quickstart openshell-saw-vm-ssh OPENSHELL_SAW_NAME=dana
+openshell sandbox exec -n assistant --workspace personal-assistant -- openclaw devices approve <id>
+```
+
+Reconnect after the approval. Also, the first time the agent sets up the
+briefing it may ask you to approve a tool-scope upgrade: run
+`/approve <id> allow` in the chat promptly — the request expires after
+about 2 minutes.
+
 Point out along the way:
 
 - Each user gets their own VM, signed in with their own account. Another
@@ -327,6 +342,7 @@ Point out along the way:
 | The workspace run fails at "Submit the request" (HTTP 500) | `oc logs -n rhdh deploy/backstage-developer-hub -c saw-ca-bundle` must list `added: Kubernetes API CA`; if not, restart Developer Hub: `oc rollout restart deploy/backstage-developer-hub -n rhdh` |
 | "Start the VM" takes more than 10 minutes | `oc get events -n saw-dana \| grep FailedMount`: the VM waits for dana's keys to arrive from Vault |
 | "403 Forbidden" on the assistant | You are signed in as someone else. Use a new private window and sign in as dana |
+| The Control UI shows "Device pairing required" | The browser needs one-time approval from the Gateway host. Approve the request from the VM (Step 8), then reconnect |
 | "Invalid parameter: redirect_uri" | Wait a minute and reload; or `make -f Makefile-quickstart keycloak-register KC_USER=dana` |
 | The briefing has no Gmail messages | The Google refresh token expired (7 days in Testing). Get a new one (Step 2), then update dana's workspace in the portal with **Create or update my agent workspace** |
 | The briefing has no Slack messages | The app is not in the channel: `/invite @<app>` |
