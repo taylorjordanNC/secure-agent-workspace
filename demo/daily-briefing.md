@@ -43,33 +43,18 @@ bundle mounted, and configures OpenClaw in it, as it does after onboarding.
 A NemoClaw sandbox created earlier by `nemoclaw onboard` is created again once
 (its `/sandbox` is not kept).
 
-## Slack app (token rotation)
+## Slack app and Google OAuth
 
-1. Create an app at <https://api.slack.com/apps>. Bot token scopes:
-   `channels:read`, `channels:history`, `groups:read`, `groups:history`,
-   `users:read`.
-2. *OAuth & Permissions*: turn on **token rotation**, and install the app
-   with the OAuth flow (`oauth.v2.access`). The response has an access token
-   (`xoxe.xoxb-…`, 12 hours) and a refresh token (`xoxe-1-…`).
-3. Invite the app to the channels the briefing should read
-   (`/invite @<app>`).
+Full setup walkthroughs — Slack app, scopes, token rotation, and the Google
+OAuth client with a `gmail.readonly` refresh token — are in
+[the personal assistant demo](personal-assistant-demo.md), Step 2.
 
-The Secret `slack` needs `client_id`, `client_secret`, and `refresh_token`.
-Without token rotation, a plain bot token in `bot_token` is used as is, with
-no refresh.
+What the Secrets look like:
 
-## Google OAuth (Gmail, read-only)
-
-1. In a Google Cloud project, enable the Gmail API and create an OAuth
-   client (type *Desktop app* or *Web application*).
-2. Get a refresh token for the scope
-   `https://www.googleapis.com/auth/gmail.readonly` (for example with the
-   OAuth 2.0 Playground, using your own client: settings, then *Use your own
-   OAuth credentials*). Ask for offline access, so a refresh token is issued.
-
-The Secret `gmail` needs `client_id`, `client_secret`, and `refresh_token`.
-Access tokens last an hour; the gateway refreshes them 5 minutes before they
-expire.
+| Secret | Keys |
+|---|---|
+| `slack` | With token rotation: `client_id`, `client_secret`, `refresh_token`. Without: a plain bot token in `bot_token`, used as is with no refresh. |
+| `gmail` | `client_id`, `client_secret`, `refresh_token` (scope `gmail.readonly`). Access tokens last an hour; the gateway refreshes them 5 minutes before they expire. |
 
 ## Turn it on for a user
 
@@ -90,9 +75,11 @@ them on the VM.
 Load the keys into Vault: uncomment the `slack` and `gmail` entries in your
 `values-secret` file (see `values-secret.yaml.template`) and run
 `./pattern.sh make load-secrets`. They go to `secret/data/hub/slack` and
-`secret/data/hub/gmail` (or under the user's `vaultPrefix`). In the
-Developer Hub portal, the `personal-assistant` profile asks for the same
-fields and stores them under the user's own Vault path.
+`secret/data/hub/gmail` (or under the user's `vaultPrefix`). The
+`personal-assistant` profile in the portal asks for the same fields and
+stores them under the user's own Vault path; for signing in and entering
+the keys, see [the personal assistant demo](personal-assistant-demo.md),
+Steps 5-7.
 
 Check on the VM, as the installer's identity:
 
@@ -103,25 +90,33 @@ openshell provider refresh status slack --workspace personal-assistant
 
 ## Demo
 
-In the assistant's OpenClaw UI (route `<user>-personal-assistant-assistant-ui`) or TUI:
+For the demo chat script ("Set up my daily briefing", the live update, the
+token and post denials), see [the personal assistant demo](personal-assistant-demo.md),
+Step 8. What that step does not show: the sandbox log's denial entries,
 
-1. "Set up my daily briefing." The agent adds the `daily-briefing` cron job
-   (every 5 minutes, isolated session), runs one update, and shows
-   `briefing.md`.
-2. Post in a channel the app is in, or send yourself an email; within 5
-   minutes the briefing has it.
-3. "Print the Slack token." The agent only has a placeholder.
-4. Ask it to post to Slack, or to call another API: the profiles are
-   read-only and list only Slack and Gmail. The sandbox log shows the denial
-   (`openshell logs assistant --workspace personal-assistant --source sandbox`).
+```
+openshell logs assistant --workspace personal-assistant --source sandbox
+```
 
 ## Limits
 
-- The NemoClaw image's OpenClaw (2026.7.1) is older than the one the bundle
-  format was checked with (2026.9.x). Check after the first apply that
-  OpenClaw lists the `slack-reader__*` and `gmail-reader__*` tools and the
-  `daily-briefing` skill. The schedule uses the agent's `cron` tool; if that
-  OpenClaw has none, schedule the update from the OpenClaw UI's cron page.
+- Under the NemoClaw image's OpenClaw 2026.7.1, the bundle's MCP servers
+  (`slack-reader__new_messages`, `gmail-reader__new_messages`) may silently
+  NOT load — they are not in the gateway's plugin list. Verify after the
+  first apply with the gateway log or `tool_search`; the briefing is then a
+  template with empty Slack/Email sections until this skew is resolved.
+  The schedule uses the agent's `cron` tool; if that OpenClaw has none,
+  schedule the update from the OpenClaw UI's cron page.
+- The egress proxy resets scoped npm URLs (`%2f`): if OpenClaw logs
+  "Failed to install missing configured plugin 'slack'", disable the
+  `slack` channel in `openclaw.json`
+  (`"channels": {"defaults": {}, "slack": {"enabled": false}}`) and restart
+  via the in-VM installer apply (`systemctl restart saw-apply.service`).
+  Re-applying the installer re-creates the sandbox and wipes `/sandbox`.
+- The NemoClaw image (`quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest`,
+  currently 0.0.110, OpenClaw 2026.7.1) has no newer release carrying
+  OpenClaw 2026.9.x yet, so the bundle format's check version is not
+  available.
 - Running processes keep their environment: a provider attached to a running
   sandbox reaches OpenClaw after its gateway restarts, which the installer
   does when the sandbox's providers change.

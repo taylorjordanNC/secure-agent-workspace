@@ -21,6 +21,10 @@ operators, the namespaces `rhdh` and `saw-portal`, the Argo CD application
 oc get applications.argoproj.io -n vp-gitops openshell-rhdh openshell-keycloak
 ```
 
+On clusters deployed without the imperative framework, these Applications
+are created and managed by hand (single- or multi-source ArgoCD
+Applications) with the same parameters; check them the same way.
+
 Expected: both `Synced` and `Healthy`. If `openshell-rhdh` is `Missing` with
 "one or more synchronization tasks are not valid", look at the reason:
 
@@ -224,6 +228,10 @@ oc get ns saw-carol --show-labels
 oc get vm,externalsecret,route -n saw-carol
 ```
 
+On clusters without the imperative framework, the portal's Application
+`portal-ws-<user>` is a hand-managed ArgoCD Application with the same
+parameters; check it the same way.
+
 Expected: Application `portal-ws-carol`, then `saw-carol-secrets`,
 `saw-carol-bom` and `saw-carol`, all `Synced`/`Healthy`; namespace
 `saw-carol` with label `saw.redhat.com/portal=true`; ExternalSecrets
@@ -351,7 +359,9 @@ oc exec -n vault vault-0 -- env VAULT_TOKEN=$TOKEN VAULT_SKIP_VERIFY=true \
   vault kv list secret/hub/saw-carol                   # no entries (no generation left)
 ```
 
-The catalog entry disappears at the next refresh.
+The catalog entry disappears at the next refresh. On clusters without the
+imperative framework, the Application `portal-ws-<user>` is hand-managed and
+is removed the same way, by hand.
 
 ## Checklist
 

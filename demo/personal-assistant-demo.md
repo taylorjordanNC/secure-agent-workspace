@@ -41,14 +41,19 @@ still do these things by hand, in this order:
    reliable fallback is `./scripts/seed-vault.sh`, which seeds Vault via
    `oc exec` using the `vault-init` Secret's root token.
 3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
-   `make -f Makefile-quickstart keycloak-add-users` for each user in
-   `overrides/saw-users.yaml` (`alice` and `carol` today), plus `dana` for
-   this demo (Step 6).
+   `keycloak-add-user` (Step 6) for each user in `overrides/saw-users.yaml`
+   (none on the `demo` branch today), plus `dana` for this demo (Step 6).
 4. **Gmail/Slack credentials** — the external accounts from Step 2: a Slack
    bot token (or token rotation), and a Google OAuth client + refresh token
    (which expires after 7 days while the consent screen is in Testing).
 
 **Order:** `copy-images` → install → secrets → Keycloak users → walkthrough.
+
+> **Clusters without the Pattern operator's framework:** this demo's install
+> command does not create the Argo CD Applications. On clusters deployed
+> without the imperative framework, every application, including the portal
+> (Red Hat Developer Hub), is a hand-managed ArgoCD Application that you
+> create yourself, with the same parameters.
 
 ---
 
@@ -320,6 +325,7 @@ Point out along the way:
 | "Invalid parameter: redirect_uri" | Wait a minute and reload; or `make -f Makefile-quickstart keycloak-register KC_USER=dana` |
 | The briefing has no Gmail messages | The Google refresh token expired (7 days in Testing). Get a new one (Step 2), then update dana's workspace in the portal with **Create or update my agent workspace** |
 | The briefing has no Slack messages | The app is not in the channel: `/invite @<app>` |
+| The assistant URL shows 502 after the workspace is ready | The sandbox's OpenClaw gateway may refuse to start while it tries to auto-install a Slack plugin over the egress proxy (scoped npm URLs are reset). Check the gateway log in the sandbox for "Failed to install missing configured plugin". Fix: in `/sandbox/.openclaw/openclaw.json`, set `"channels": {"defaults": {}, "slack": {"enabled": false}}` (keep the rest of the file intact), then re-apply the in-VM installer (`systemctl restart saw-apply.service`). Re-applying re-creates the sandbox and wipes `/sandbox`, so re-apply the patch if that happens. |
 
 More checks, for administrators with the `openshell` CLI:
 

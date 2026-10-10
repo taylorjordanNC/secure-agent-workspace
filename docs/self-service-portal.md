@@ -326,6 +326,10 @@ Before the first sync:
    `oc get argocd -n vp-gitops -o jsonpath='{.items[0].spec.applicationSet}'`
    must not be empty.
 
+On clusters deployed without the imperative framework, the Applications
+above (including the portal) are created and managed by hand (single- or
+multi-source ArgoCD Applications) with the same parameters.
+
 A PostSync Job creates or updates the Keycloak client `rhdh` (confidential,
 redirect `https://<rhdh>/api/auth/oidc/handler/frame`) with the secret from
 Vault, also in a realm that existed before.

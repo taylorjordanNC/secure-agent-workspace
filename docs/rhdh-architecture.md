@@ -23,7 +23,7 @@ This page explains the parts and how they connect. To try it, follow the
 | Admission policies | `ValidatingAdmissionPolicy` `saw-portal-*` | Pin what `rhdh-portal` may create (Secrets `saw-req-*`, PipelineRuns of the two pipelines with one parameter) and which Argo CD applications the provisioner may delete (`portal-ws-*`, labelled as the portal's). |
 | Workspace registry | ConfigMaps `saw-ws-<user>` in `saw-portal` (label `saw.redhat.com/workspace=true`) | One entry per workspace: user name, profile, values for the `saw-users` chart. |
 | Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token), the RHDH catalog with each workspace's status (`/catalog.yaml`, no token) and the progress the create template follows (`/status`, the user's Backstage token, through the RHDH proxy endpoint `/saw-status`); a NetworkPolicy admits only RHDH and Argo CD. |
-| ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. |
+| ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. On clusters deployed without the imperative framework, these Applications are created and managed by hand (single- or multi-source ArgoCD Applications) with the same parameters. |
 | `saw-users` → `openshell-saw` | namespace `saw-<user>` | The same charts as a Git-declared user in `overrides/saw-users.yaml`: External Secrets for the user's keys, the BOM, the VM, the gateway and UI routes. |
 | Vault | `secret/data/hub/saw-<user>/<generation>/<secret>` | The user's keys, under the registration's generation (a new one per registration, so a deleted workspace's cleanup never reaches a replacement's keys). The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
 | In-VM installer | `apply_bom.py` in the VM | Creates the sandboxes, starts OpenClaw, and runs one OAuth proxy and one port forward per sandbox UI. |
@@ -70,6 +70,10 @@ flowchart LR
   eso -- reads --> vault
   user -- sandbox UI --> route --> vm
 ```
+
+On clusters deployed without the imperative framework, the Argo CD
+Applications above (including the portal's) are created and managed by hand
+with the same parameters.
 
 ## Creating a workspace
 
