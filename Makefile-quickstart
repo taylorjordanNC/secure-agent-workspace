@@ -16,6 +16,10 @@ AGENT          ?= openclaw
 CONTAINER_RUNTIME ?= podman
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+# interceptor (OpenShell governance interceptor) or apf (docs/apf.md)
+GOVERNANCE_ENGINE ?= interceptor
+# Python for the APF bundle tooling (scripts/apf-bundle.py needs cryptography).
+APF_PYTHON ?= python3
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -130,15 +134,109 @@ WORKSPACE      ?= default
 	echo "  Image registry route: enabled"
 	@echo "Prerequisites OK."
 
-.PHONY: check-prereqs keycloak-check generate-keys \
-        build-nemoclaw build-nemoclaw-cli \
-        build-gateway-docker build-gateway-podman copy-images \
-        keycloak keycloak-issuer login whoami logout delete-keycloak \
-        keycloak-add-user keycloak-register keycloak-redirects keycloak-redirects-sync \
-        openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-status openshell-saw-restart openshell-saw-vm-ssh openshell-saw-ssh ssh-secret \
-        openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
-        openshell-saw-delete sandbox-pre-delete delete-all status \
-        governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
+# Pass values through the environment so spaces and special shell characters
+# in credentials do not become parts of a shell command.
+export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
+export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOVERNANCE_ENGINE
+export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
+export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
+export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
+export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
+
+.PHONY: check-prereqs \
+        keycloak-check \
+        generate-keys \
+        build-nemoclaw \
+        build-nemoclaw-cli \
+        build-gateway-docker \
+        build-gateway-podman \
+        copy-images \
+        keycloak \
+        keycloak-issuer \
+        login \
+        whoami \
+        logout \
+        delete-keycloak \
+        keycloak-add-user \
+        keycloak-register \
+        keycloak-redirects \
+        keycloak-redirects-sync \
+        openshell-saw-create \
+        openshell-saw-list \
+        openshell-saw-logs \
+        openshell-saw-status \
+        openshell-saw-restart \
+        openshell-saw-vm-ssh \
+        openshell-saw-ssh \
+        ssh-secret \
+        openshell-saw-configure-gateway \
+        openshell-saw-tui \
+        openshell-saw-gui \
+        test \
+        openshell-saw-delete \
+        sandbox-pre-delete \
+        delete-all \
+        status \
+        governance-list-profiles \
+        governance-add-profile \
+        governance-remove-profile \
+        governance-create-profile \
+        governance-demo \
+        prereqs-check \
+        quickstart-prereqs-check \
+        check-oidc-ca \
+        ssh-key-generate \
+        sandbox-build \
+        cli-build \
+        gateway-build \
+        gateway-build-docker \
+        gateway-build-podman \
+        images-mirror \
+        governance-interceptor-build \
+        governance-interceptor-build-local \
+        keycloak-deploy \
+        keycloak-delete \
+        keycloak-passwords \
+        keycloak-harden \
+        keycloak-add-users \
+        keycloak-password \
+        keycloak-reset-password \
+        saw-create \
+        saw-configure \
+        saw-list \
+        saw-logs \
+        saw-status \
+        saw-restart \
+        saw-restart-pending \
+        saw-vm-ssh \
+        saw-ssh \
+        saw-tui \
+        saw-gui \
+        saw-delete \
+        quickstart-delete \
+        test-deployment \
+        test-harness-e2e \
+        lint \
+        governance-profile-list \
+        governance-profile-add \
+        governance-profile-remove \
+        governance-profile-create \
+        governance-deploy \
+        governance-delete \
+        portal-vault-setup \
+        sandbox-ui \
+        nemoclaw-tui \
+        openclaw-tui \
+        nemoclaw-gui \
+        openclaw-gui \
+        clean-stale-operators \
+        pre-uninstall \
+        uninstall \
+        pattern-uninstall \
+        apf-keys \
+        apf-bundle \
+        apf-bundle-check \
+        governance-apf \
         .check-saw-name .check-ssh-key .check-gateway-ca .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -492,6 +590,14 @@ openshell-saw-ssh: .check-saw-name .check-gateway-ca ## SSH into a sandbox
 		-o LogLevel=ERROR \
 		sandbox@openshell-$(OPENSHELL_SAW_NAME).default
 
+saw-restart-pending: ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
+	@CONFIRM=$(CONFIRM) $(SCRIPTS_DIR)/saw-restart-pending.sh
+
+saw-ssh: .check-saw-name .check-gateway-ca ## Open a shell in a sandbox
+	@$(SCRIPTS_DIR)/saw-ssh.sh
+
+##@ User Access
+
 # --- User access ---
 
 nemoclaw-tui: .check-saw-name .check-gateway-ca ## Launch NemoClaw TUI (e.g. make nemoclaw-tui SANDBOX_NAME=cuda-sandbox WORKSPACE=cuda-dev)
@@ -598,6 +704,23 @@ governance-create-profile: ## Create a new profile from YAML (PROFILE_NAME=jira 
 
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)
+
+# --- APF (Agent Policy Fabric) governance: docs/apf.md ---
+
+APF_SEED ?= $(HOME)/.apf-keys/apf.seed
+GHCR_USER ?=
+
+apf-keys: ## Create the APF signing key (seed in APF_SEED, public key in the chart)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py keygen
+
+apf-bundle: ## Sign charts/governance-policy into the APF bundle (commit it to your deployment branch)
+	@APF_SEED=$(APF_SEED) $(APF_PYTHON) scripts/apf-bundle.py build
+
+apf-bundle-check: ## Check the committed APF bundle: hashes, signature, up to date
+	@$(APF_PYTHON) scripts/apf-bundle.py verify
+
+governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=, GHCR_TOKEN= env)
+	@NS=$(NS) APF_SEED=$(APF_SEED) GHCR_USER=$(GHCR_USER) PYTHON=$(APF_PYTHON) $(SCRIPTS_DIR)/governance-apf.sh
 
 # --- Test ---
 
