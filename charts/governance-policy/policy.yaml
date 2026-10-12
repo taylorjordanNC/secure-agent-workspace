@@ -114,3 +114,22 @@ network_policies:
       - path: /usr/bin/node
       - path: /usr/bin/node-*
       - path: /usr/local/bin/node
+
+  # On-cluster Radicale calendar server (charts/radicale, openshell-agents
+  # ns): the provider profile (profiles/calendar.yaml) allows it, but like
+  # every other in-cluster service it must ALSO be named here — the ceiling
+  # applies to in-cluster hosts just as it does to mailpit/mattermost.
+  calendar:
+    name: calendar
+    endpoints:
+      - host: radicale.openshell-agents.svc.cluster.local
+        port: 5232
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
+      - path: /usr/bin/node
+      - path: /usr/bin/node-*
+      - path: /usr/local/bin/node
