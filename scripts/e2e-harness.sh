@@ -136,8 +136,10 @@ else
 fi
 
 step "H2: mounted content is the bundle"
-check "plugin.json present" -- sb_exec test -f /sandbox/harness/plugin.json
-check "mcp.json present" -- sb_exec test -f /sandbox/harness/mcp.json
+# openclaw 2026.7.1 reads the Claude-layout bundle (.claude-plugin/plugin.json,
+# .mcp.json); older bundles keep the plain names — accept either.
+check "plugin manifest present" -- sb_exec sh -c 'test -f /sandbox/harness/plugin.json -o -f /sandbox/harness/.claude-plugin/plugin.json'
+check "mcp.json present" -- sb_exec sh -c 'test -f /sandbox/harness/.mcp.json -o -f /sandbox/harness/mcp.json'
 check "skills dir present" -- sb_exec test -d /sandbox/harness/skills
 check "revision marker present" -- sb_exec test -f /sandbox/harness/.saw-harness-revision
 if [[ -n "${STATUS_JSON}" ]]; then
@@ -164,7 +166,7 @@ else
   # Same bar as the installer's verify: mount row loaded, caps covering the
   # mounted tree, every native plugin id enabled.
   NEED_CAPS=""
-  sb_exec test -f /sandbox/harness/mcp.json >/dev/null 2>&1 && NEED_CAPS="mcpServers"
+  sb_exec sh -c 'test -f /sandbox/harness/.mcp.json -o -f /sandbox/harness/mcp.json' >/dev/null 2>&1 && NEED_CAPS="mcpServers"
   sb_exec test -d /sandbox/harness/skills >/dev/null 2>&1 && NEED_CAPS="${NEED_CAPS} skills"
   NEED_PLUGINS=$(sb_exec ls /sandbox/harness/plugins 2>/dev/null || true)
   echo "${PLUGINS_JSON}" | NEED_CAPS="${NEED_CAPS}" NEED_PLUGINS="${NEED_PLUGINS}" python3 -c "
@@ -198,7 +200,7 @@ fi
 
 step "H5: no literal secrets in the mounted bundle"
 # Placeholders (${VAR} / Bearer ${VAR}) are the only allowed secret shape.
-if sb_exec sh -c 'grep -rniE "api[_-]?key|bearer [A-Za-z0-9._-]{16,}|sk-[A-Za-z0-9]{16,}" /sandbox/harness/mcp.json' \
+if sb_exec sh -c 'F=/sandbox/harness/.mcp.json; [ -f "$F" ] || F=/sandbox/harness/mcp.json; grep -rniE "api[_-]?key|bearer [A-Za-z0-9._-]{16,}|sk-[A-Za-z0-9]{16,}" "$F"' \
     2>/dev/null | grep -v '\${' >/dev/null; then
   fail "literal secret pattern found in mounted mcp.json"
 else

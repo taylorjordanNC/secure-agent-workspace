@@ -180,15 +180,24 @@ def test_the_bundle_is_valid_and_the_chart_copy_matches():
     assert out.returncode == 0, out.stdout + out.stderr
 
     def tree(path):
+        # Include dot-files (.mcp.json, .claude-plugin/plugin.json): they are
+        # part of the bundle and must not drift between the two copies.
         return {str(p.relative_to(path)): p.read_bytes() for p in path.rglob("*")
-                if p.is_file() and not p.name.startswith(".")}
+                if p.is_file() and p.name not in (".containerignore", ".dockerignore")}
     assert tree(BUNDLE) == tree(ROOT / "charts" / "saw-bom" / "harness" / "daily-briefing")
     doc = yaml.safe_load((BUNDLE / "harness.yaml").read_text())
     assert {s["name"]: s["governanceProfile"] for s in doc["spec"]["mcpServers"]} == {
         "slack-reader": "slack", "gmail-reader": "gmail"}
-    servers = json.loads((BUNDLE / "mcp.json").read_text())["mcpServers"]
-    assert servers["slack-reader"]["env"] == {"SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"}
-    assert servers["gmail-reader"]["env"] == {"GMAIL_ACCESS_TOKEN": "${GMAIL_ACCESS_TOKEN}"}
+    servers = json.loads((BUNDLE / ".mcp.json").read_text())["mcpServers"]
+    # openclaw 2026.7.1 passes mcp.json env values as literals (no ${VAR}
+    # expansion): the supervisor-mounted MITM proxy CA path is hardcoded, and
+    # the provider tokens stay placeholders (injected by the egress proxy).
+    assert servers["slack-reader"]["env"] == {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "NODE_EXTRA_CA_CERTS": "/run/openshell-supervisor-ca/material/ca.crt"}
+    assert servers["gmail-reader"]["env"] == {
+        "GMAIL_ACCESS_TOKEN": "${GMAIL_ACCESS_TOKEN}",
+        "NODE_EXTRA_CA_CERTS": "/run/openshell-supervisor-ca/material/ca.crt"}
 
 
 # -- the MCP servers, against fake Slack and Gmail ----------------------------------

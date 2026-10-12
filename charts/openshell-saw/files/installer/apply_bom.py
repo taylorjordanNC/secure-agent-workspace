@@ -648,11 +648,19 @@ HARNESS_IMAGE_MAX_BYTES = 512 * 1024 * 1024
 HARNESS_CONFIG_KEYS = ("plugins.load.paths", "skills.load.extraDirs")
 OPENCLAW_EXEC_ENV = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                      "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
-# mcp.json env/header value: exactly ${VAR}, or Authorization-style
-# "Bearer ${VAR}". Any other prefix could smuggle a literal secret.
+# mcp.json env/header value: exactly ${VAR}, Authorization-style
+# "Bearer ${VAR}", or — for a non-credential name — a literal filesystem
+# path (a CA bundle path is not credential material). Any other prefix
+# could smuggle a literal secret.
 MCP_PLACEHOLDER_ONLY = re.compile(
     r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|Bearer \$\{[A-Za-z_][A-Za-z0-9_]*\})$",
     re.IGNORECASE)
+# An env var or header name that is credential-ish; its value must always
+# be a placeholder, never a literal.
+MCP_CREDENTIAL_NAME_RE = re.compile(
+    r"key|token|secret|password|passwd|auth", re.IGNORECASE)
+# A literal value that is just a filesystem path (e.g. a CA bundle).
+MCP_LITERAL_PATH_RE = re.compile(r"^/\S*$")
 # A stdio arg naming a credential-ish flag with a literal value, e.g.
 # "--api-key=sk-live-...". The "--flag value" two-token form is not covered.
 MCP_ARG_CREDENTIAL_RE = re.compile(
@@ -800,8 +808,9 @@ def describe_harness_tree(files, inline=False):
     harness.yaml; it is the installer's view of the bundle. Returns:
       name, agent
       skills               the bundle has skills/
-      agentPluginsBundle   plugin.json at the root (OpenClaw loads skills/ and
-                           mcp.json from the bundle root)
+      agentPluginsBundle   a plugin manifest (plugin.json, or the Claude-layout
+                           .claude-plugin/plugin.json — OpenClaw loads skills/
+                           and mcp.json from the bundle root)
        mcp                  the bundle has mcp.json
        pluginDirs           native plugins under plugins/
        governance           [{kind, name, governanceProfile, hosts}] to check
@@ -819,12 +828,16 @@ def describe_harness_tree(files, inline=False):
     doc = _yaml(files["harness.yaml"][0].decode("utf-8"), "harness.yaml")
     spec = doc.get("spec") or {}
     name = (doc.get("metadata") or {}).get("name", "")
-    if "mcp.json" in files and "plugin.json" not in files:
+    # OpenClaw 2026.7.1 reads the dot-prefixed .mcp.json; older bundles keep
+    # the plain mcp.json name, so both are accepted (and governed).
+    mcp_name = ".mcp.json" if ".mcp.json" in files else "mcp.json"
+    has_manifest = "plugin.json" in files or ".claude-plugin/plugin.json" in files
+    if mcp_name in files and not has_manifest:
         raise InstallerError(
-            f"harness '{name}': mcp.json with no plugin.json at the bundle root; OpenClaw only "
+            f"harness '{name}': {mcp_name} with no plugin manifest at the bundle root; OpenClaw only "
             "reads a bundle's mcp.json when the bundle root is on plugins.load.paths, which "
             "openclaw_harness_config only sets for an Agent Plugins bundle. Add a plugin.json "
-            "at the bundle root")
+            "(or the Claude-layout .claude-plugin/plugin.json) at the bundle root")
     plugin_dirs = sorted({rel.split("/")[1] for rel in files
                           if rel.startswith("plugins/") and rel.count("/") >= 2})
     declared_plugins = {item.get("name") for item in spec.get("plugins") or []}
@@ -849,9 +862,9 @@ def describe_harness_tree(files, inline=False):
                 "key the server needs and give the sandbox a provider of that type: the server "
                 "reads a placeholder from the provider's env var (for example BRAVE_API_KEY) "
                 "and the sandbox's egress proxy adds the real key")
-    if "mcp.json" in files:
+    if mcp_name in files:
         try:
-            servers = json.loads(files["mcp.json"][0]).get("mcpServers") or {}
+            servers = json.loads(files[mcp_name][0]).get("mcpServers") or {}
         except ValueError as exc:
             raise InstallerError(f"harness '{name}': mcp.json is not valid JSON ({exc})") from None
         for server, conf in sorted(servers.items()):
@@ -861,11 +874,18 @@ def describe_harness_tree(files, inline=False):
                     "\"streamable-http\" or \"sse\" (OpenClaw ignores it otherwise)")
             for field in ("env", "headers"):
                 for key, value in (conf.get(field) or {}).items():
-                    if not isinstance(value, str) or not MCP_PLACEHOLDER_ONLY.match(value):
-                        raise InstallerError(
-                            f"harness '{name}': mcp.json server '{server}' {field} '{key}' is not "
-                            "a bare ${VAR} placeholder (e.g. \"Bearer ${VAR}\"); a literal secret "
-                            "must not ship in a bundle's mcp.json, the ConfigMap or the image")
+                    if isinstance(value, str) and MCP_PLACEHOLDER_ONLY.match(value):
+                        continue
+                    # A literal is only safe for a non-credential env var
+                    # whose value is a filesystem path (e.g. a CA bundle
+                    # path); a credential name always needs a placeholder.
+                    if (field == "env" and not MCP_CREDENTIAL_NAME_RE.search(key)
+                            and isinstance(value, str) and MCP_LITERAL_PATH_RE.match(value)):
+                        continue
+                    raise InstallerError(
+                        f"harness '{name}': mcp.json server '{server}' {field} '{key}' is not "
+                        "a bare ${VAR} placeholder (e.g. \"Bearer ${VAR}\"); a literal secret "
+                        "must not ship in a bundle's mcp.json, the ConfigMap or the image")
             for arg in conf.get("args") or []:
                 match = isinstance(arg, str) and MCP_ARG_CREDENTIAL_RE.match(arg)
                 if match and not MCP_PLACEHOLDER_ONLY.match(match.group("value")):
@@ -886,7 +906,8 @@ def describe_harness_tree(files, inline=False):
                     raise InstallerError(
                         f"harness '{name}': mcp server '{server}' runs {command!r}, a file in the "
                         "bundle; an inline bundle keeps no file modes, so run it through its "
-                        "interpreter (for example command: node, args: [${PLUGIN_ROOT}/...]) "
+                        "interpreter (for example command: node, "
+                        "args: [${CLAUDE_PLUGIN_ROOT}/...]) "
                         "or ship the bundle as an image")
                 # A stdio server runs inside the sandbox, under its policy. It
                 # needs a governanceProfile only when it calls a service.
@@ -911,8 +932,8 @@ def describe_harness_tree(files, inline=False):
         "name": name,
         "agent": spec.get("agent", "openclaw"),
         "skills": any(rel.startswith("skills/") for rel in files),
-        "agentPluginsBundle": "plugin.json" in files,
-        "mcp": "mcp.json" in files,
+        "agentPluginsBundle": has_manifest,
+        "mcp": mcp_name in files,
         "pluginDirs": plugin_dirs,
         "governance": governance,
     }
@@ -949,8 +970,9 @@ def host_allowed(host, patterns):
 def openclaw_harness_config(info):
     """OpenClaw config that makes it load the mounted bundle.
 
-    An Agent Plugins bundle (plugin.json at the root) brings its skills/ and
-    mcp.json (MCP servers) with it, so the bundle root goes on
+    An Agent Plugins bundle (a plugin.json or Claude-layout
+    .claude-plugin/plugin.json manifest at the root) brings its skills/ and
+    .mcp.json (MCP servers) with it, so the bundle root goes on
     plugins.load.paths. Otherwise skills/ is an extra skill directory.
     plugins/ holds native OpenClaw plugins (tool code); OpenClaw discovers
     every plugin under it from the one parent path, so adding or removing a

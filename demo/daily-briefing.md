@@ -25,7 +25,9 @@ uses (`harnessRef: {name: daily-briefing}`):
 
 ```
 harness.yaml                    governance: slack-reader -> slack, gmail-reader -> gmail
-plugin.json, mcp.json           Agent Plugins bundle: OpenClaw loads skills/ and mcp.json
+.claude-plugin/plugin.json,
+.mcp.json                       Agent Plugins bundle (the Claude layout that openclaw
+                                2026.7.1 reads): OpenClaw loads skills/ and .mcp.json
 skills/daily-briefing/SKILL.md  update, schedule (cron tool, every 5 min), show
 mcp/slack-reader.mjs            tool new_messages: today's messages since the last call
 mcp/gmail-reader.mjs            tool new_messages: today's mail since the last call
@@ -100,13 +102,33 @@ openshell logs assistant --workspace personal-assistant --source sandbox
 
 ## Limits
 
-- Under the NemoClaw image's OpenClaw 2026.7.1, the bundle's MCP servers
-  (`slack-reader__new_messages`, `gmail-reader__new_messages`) may silently
-  NOT load — they are not in the gateway's plugin list. Verify after the
-  first apply with the gateway log or `tool_search`; the briefing is then a
-  template with empty Slack/Email sections until this skew is resolved.
+- The bundle must use the Claude layout openclaw 2026.7.1 reads:
+  `.claude-plugin/plugin.json` + `.mcp.json` at the bundle root, with
+  `${CLAUDE_PLUGIN_ROOT}` in `args`. An earlier version of this bundle used
+  the plain `plugin.json`/`mcp.json`/`${PLUGIN_ROOT}` layout, and the MCP
+  servers (`slack-reader__new_messages`, `gmail-reader__new_messages`)
+  silently NOT loaded — they were not in the gateway's plugin list. That was
+  the earlier "2026.7.1 skew" report; the real cause was the layout (a newer
+  image was never verified to fix it), and the claude-layout bundle now
+  loads both tools. Verify after the first apply with the gateway log or
+  `tool_search`.
   The schedule uses the agent's `cron` tool; if that OpenClaw has none,
   schedule the update from the OpenClaw UI's cron page.
+- openclaw 2026.7.1 passes `.mcp.json` `env` values through as literals (no
+  `${VAR}` expansion inside the sandbox), so the bundle hardcodes
+  `NODE_EXTRA_CA_CERTS=/run/openshell-supervisor-ca/material/ca.crt` — the
+  supervisor-mounted MITM egress proxy CA inside the sandbox. Only a
+  non-credential env var may carry a literal path; provider tokens stay
+  `${VAR}` placeholders.
+- ⚠️ **CURRENT LIMITATION: the sandbox egress proxy does not inject the real
+  provider token.** The gateway's profile→policy conversion drops the
+  `credentials:` binding (prebuilt gateway, not source in this repo), so the
+  proxy passes the placeholder through uninjected. The MCP tools load and are
+  invocable, but Slack/Gmail calls return `invalid_auth`, and the briefing
+  shows the auth failure instead of real messages. The `credentials:` section
+  in the Secrets table below is the *designed* behavior — until the gateway
+  injects the token, on-cluster briefings will not have real Slack/Gmail
+  content.
 - The sandbox gateway can hang and die mid-conversation: a model call through
   the egress proxy can stall with no timeout. Re-run the in-VM installer apply
   (`systemctl restart saw-apply.service`) and continue — the agent's sessions

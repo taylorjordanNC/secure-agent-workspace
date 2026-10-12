@@ -12,9 +12,12 @@ reads.
 ```
 harness-bundles/<bundle>/
   harness.yaml            kind HarnessBundle: name, version, governance (read by the installer only)
-  plugin.json             Agent Plugins manifest: OpenClaw loads skills/ and mcp.json from the bundle root
+  .claude-plugin/plugin.json
+                          Agent Plugins manifest (the Claude layout that openclaw
+                          2026.7.1 reads; a plain plugin.json is also accepted):
+                          OpenClaw loads skills/ and .mcp.json from the bundle root
   skills/<name>/SKILL.md  skills
-  mcp.json                MCP servers
+  .mcp.json               MCP servers (a plain mcp.json is also accepted)
   mcp/…                   files a stdio MCP server runs (optional)
   plugins/<id>/           native OpenClaw plugins (tool code)
     package.json          "openclaw": { "extensions": ["./index.mjs"] }
@@ -25,16 +28,18 @@ harness-bundles/<bundle>/
 `harness-bundles/ds-default` is the sample: the `pattern-author` skill, the
 `saw-echo` tool plugin and a stdio `saw-mcp-echo` MCP server.
 
-### MCP servers (`mcp.json`)
+### MCP servers (`.mcp.json`)
 
-Agent Plugins format. Every server needs a `type`; OpenClaw ignores an entry
+Claude/Agent Plugins format. openclaw 2026.7.1 reads the dot-prefixed
+`.mcp.json` (older bundles keep the plain `mcp.json` name; both are accepted
+and governed). Every server needs a `type`; OpenClaw ignores an entry
 without one.
 
 ```json
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "local-tool": { "type": "stdio", "command": "node", "args": ["${PLUGIN_ROOT}/mcp/server.mjs"] },
+    "local-tool": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"] },
     "local-mcp":  { "type": "streamable-http", "url": "http://my-mcp.mcp-servers.svc.cluster.local:8080/mcp" }
   }
 }
@@ -45,10 +50,19 @@ without one.
 | `stdio` | `command` (a bare name or `./`-relative), `args`, `env`, `cwd` | inside the sandbox |
 | `streamable-http`, `sse` | `url`, `headers` | elsewhere; the sandbox connects to it |
 
-The only path placeholders are `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` (a
+The only path placeholders are `${CLAUDE_PLUGIN_ROOT}` and `${PLUGIN_DATA}` (a
 credential placeholder like `${BRAVE_API_KEY}` is separate, see below); a
 bundle never holds a key. The agent sees a server's tools as
 `<server>__<tool>`, e.g. `local-mcp__search`.
+
+`env` values are passed to the server **as literals** by openclaw 2026.7.1
+(no `${VAR}` expansion inside the sandbox), so a literal value is only safe
+for a non-credential env var whose value is a filesystem path — for example
+the supervisor-mounted MITM egress proxy CA at
+`/run/openshell-supervisor-ca/material/ca.crt`, which a stdio server needs in
+`NODE_EXTRA_CA_CERTS` to reach the model API. Anything else (a secret, or a
+path-shaped value under a `key`/`token`/`secret`/`auth`-named variable) must
+stay a `${VAR}` placeholder; the installer refuses other literals.
 
 A remote server must be declared in `harness.yaml` with a governance profile,
 and its host must be one of that profile's endpoints:
@@ -108,7 +122,7 @@ they put the real key in the sandbox, where the agent could read it.
 
 Everything a stdio server downloads at start (`npx -y <package>`) needs a
 profile that allows `registry.npmjs.org` too; a server shipped in the bundle
-(`node ${PLUGIN_ROOT}/mcp/server.mjs`) does not.
+(`node ${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs`) does not.
 
 ### Tool plugins (`plugins/<id>/`)
 
@@ -197,7 +211,7 @@ restriction on a bundle's files. Limits:
 
 - the 1 MiB ConfigMap size;
 - no file modes: a stdio server must run a bundled file through its
-  interpreter (`command: node`, `args: ["${PLUGIN_ROOT}/mcp/server.mjs"]`).
+  interpreter (`command: node`, `args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"]`).
 
 A bundle that does not fit ships as an image.
 
@@ -227,7 +241,8 @@ For each sandbox with a `harnessRef`:
    data volumes is lost, as with a pod restart.
 5. **Configure OpenClaw:** `plugins.load.paths` gets `/sandbox/harness`
    (skills and MCP servers) and `/sandbox/harness/plugins` (every tool
-   plugin). A bundle without `plugin.json` uses `skills.load.extraDirs`.
+   plugin). A bundle without a plugin manifest (`plugin.json` or
+   `.claude-plugin/plugin.json`) uses `skills.load.extraDirs`.
    Re-apply re-sets these keys; verify fails if they drifted.
 6. **Verify:** the volume holds the source intact, the container mounts it
    read-only, `openclaw plugins list --json` shows the bundle row loaded
@@ -262,8 +277,8 @@ OpenClaw config (values only, never bundle bytes through `exec`):
 
 | Bundle has | Setting |
 |---|---|
-| `plugin.json` | `plugins.load.paths` += `/sandbox/harness` |
-| no `plugin.json`, but `skills/` | `skills.load.extraDirs = ["/sandbox/harness/skills"]` |
+| a plugin manifest (`plugin.json` or `.claude-plugin/plugin.json`) | `plugins.load.paths` += `/sandbox/harness` |
+| no plugin manifest, but `skills/` | `skills.load.extraDirs = ["/sandbox/harness/skills"]` |
 | `plugins/` | `plugins.load.paths` += `/sandbox/harness/plugins` |
 
 ### Lifecycle

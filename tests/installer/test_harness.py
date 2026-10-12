@@ -314,7 +314,7 @@ def test_a_bundle_without_plugin_json_uses_extra_skill_dirs(ab):
 
 def test_mcp_json_without_plugin_json_is_refused(ab):
     mcp = '{"mcpServers": {"s": {"type": "stdio", "command": "node"}}}'
-    with pytest.raises(ab.InstallerError, match="mcp.json with no plugin.json"):
+    with pytest.raises(ab.InstallerError, match="mcp.json with no plugin manifest"):
         ab.describe_harness_tree(_tree(**{"mcp.json": mcp}))
 
 
@@ -425,6 +425,48 @@ def test_a_placeholder_only_value_in_mcp_json_is_accepted(ab, field, value):
             "url": "https://api.tavily.com/mcp", field: value}
     decl = {"governanceProfile": "web-search"} if field == "headers" else None
     ab.describe_harness_tree(_stdio_tree(decl, conf))
+
+
+def test_a_literal_path_for_a_non_credential_env_var_is_accepted(ab):
+    """openclaw 2026.7.1 passes mcp.json env values as literals (no ${VAR}
+    expansion), so a filesystem path is the only literal that can reach the
+    server: the supervisor-mounted MITM proxy CA, in NODE_EXTRA_CA_CERTS."""
+    conf = {"type": "stdio", "command": "node",
+            "env": {"NODE_EXTRA_CA_CERTS": "/run/openshell-supervisor-ca/material/ca.crt"}}
+    ab.describe_harness_tree(_stdio_tree(conf=conf))
+
+
+def test_a_literal_path_for_a_credential_named_env_var_is_refused(ab):
+    """A credential name keeps its value a placeholder even when it looks like
+    a path — a literal secret must not ship in the bundle."""
+    conf = {"type": "stdio", "command": "node", "env": {"API_TOKEN_PATH": "/run/token/ca"}}
+    with pytest.raises(ab.InstallerError, match="bare \\$\\{VAR\\} placeholder"):
+        ab.describe_harness_tree(_stdio_tree(conf=conf))
+
+
+def test_a_path_shaped_literal_in_headers_is_refused(ab):
+    """The literal-path allowance is env-only: a header never takes one."""
+    conf = {"type": "streamable-http", "url": "https://api.tavily.com/mcp",
+            "headers": {"X-Cert-Path": "/run/openshell-supervisor-ca/material/ca.crt"}}
+    decl = {"governanceProfile": "web-search"}
+    with pytest.raises(ab.InstallerError, match="bare \\$\\{VAR\\} placeholder"):
+        ab.describe_harness_tree(_stdio_tree(decl, conf))
+
+
+def test_a_claude_layout_bundle_without_a_plain_manifest_is_loaded_from_its_root(ab):
+    """openclaw 2026.7.1 reads .claude-plugin/plugin.json and .mcp.json: a
+    bundle with only those must still be an Agent Plugins bundle (its root on
+    plugins.load.paths, so OpenClaw reads its .mcp.json)."""
+    mcp = '{"mcpServers": {"s": {"type": "stdio", "command": "node"}}}'
+    info = ab.describe_harness_tree(_tree(**{".claude-plugin__plugin.json": "{}", ".mcp.json": mcp}))
+    assert info["agentPluginsBundle"] and info["mcp"]
+    assert ab.openclaw_harness_config(info) == {"plugins.load.paths": ["/sandbox/harness"]}
+
+
+def test_claude_layout_mcp_json_without_a_manifest_is_refused(ab):
+    mcp = '{"mcpServers": {"s": {"type": "stdio", "command": "node"}}}'
+    with pytest.raises(ab.InstallerError, match="no plugin manifest"):
+        ab.describe_harness_tree(_tree(**{".mcp.json": mcp}))
 
 
 def test_a_literal_secret_in_an_arg_flag_is_refused(ab):
