@@ -24,6 +24,18 @@ your own.
 | Self-service portal one-time setup (operators + chart + Vault + client job) | ~20 to 30 minutes, mostly operator CSVs and the backstage dynamic-plugins init |
 | The demo itself | ~12 to 15 minutes |
 
+**Notes for the presenter**
+
+- Driving nudges are visible in the chat: the operator's prompts to the agent
+  (e.g. beat 1's fallback nudge and its explicit send instruction) appear in
+  the OpenClaw/Mattermost transcripts as ordinary user messages — that IS the
+  realistic driving path, so the audience sees the operator talking to the
+  assistant.
+- If you record the demo: all interactive logins type into MASKED password
+  fields (dots). The sso/Keycloak login typing is in the beat-0/1/4/5 browser
+  takes — trim each recorded segment at the login boundary if you want a
+  login-free take.
+
 ## Prerequisites beyond the pattern install
 
 `./pattern.sh make install` deploys the platform, but a fresh deployer must
@@ -266,7 +278,10 @@ Talking point: "Everything you are about to see is deployed declaratively via Gi
 
 WHO: User (alice) on LEFT, Admin on RIGHT.
 
-1. LEFT: Keycloak login as `alice` → OpenClaw UI (http://localhost:24201).
+1. LEFT: Keycloak login as `alice` → OpenClaw UI via the
+   `workshop-default-notebook-ui` route (see the URL list in the
+   prerequisites). The in-VM fallback `http://localhost:24201` only works
+   from inside the VM — it is NOT the demo path.
 2. LEFT: submit the ONE task prompt: "I'm back from PTO — catch me up:
    summarize the key points from #ai-platform and summarize my unread email."
 3. DRIVING REALITY (verified 3-step pattern — the ONE task prompt does NOT
@@ -407,8 +422,10 @@ openshell sandbox provider attach notebook calendar
 openshell sandbox provider status notebook calendar
 # status flips waiting_for_supervisor -> ready (notebook / calendar: ready ...
 # Installed: credentials=true, policy=true, future process environment=true);
-# NO sandbox restart needed. NOTE: the bare `sandbox provider status` form is
-# STALE — it now REQUIRES <NAME> <PROVIDER>.
+# NO sandbox restart needed. NOTE: the bare `sandbox provider status` form
+# (stale CLI) ERRORS on camera with "required arguments were not provided:
+# <NAME> <PROVIDER>" — use the two-argument form above:
+# `openshell sandbox provider status notebook calendar`.
 ```
 
 7. New interaction: "what meetings did I miss?" — the agent reads the calendar
@@ -455,19 +472,38 @@ expect the "View in Browser" interstitial before the login form.
    keys, register the workspace" → "Argo CD creates the workspace's
    applications" → "Argo CD creates the VM" → "Start the VM" → "Install
    OpenShell and the sandboxes (about 4-5 minutes)", ending with the
-   **Workspace status report** step. NOTE: install takes ~4-5 min (not ~10);
-   on an idempotent re-run the steps complete in seconds-to-minutes
-   (observed: register 12s, Argo 6s, VM 7s, start 9s, install 18s); a
-   first-time provisioning takes ~7 minutes.
+   **Workspace status report** step. KNOW WHICH VARIANT YOU ARE IN — the
+   audience sees very different things:
+   - **First-time provisioning** (bob's workspace does not exist yet — the
+     setup path, run once during pre-demo setup): total ~7 minutes, dominated
+     by the install step (~4-5 min). The audience watches the steps complete
+     one by one; narrate during the install wait — it is the longest quiet
+     stretch in the demo (talk to the Vault/ESO credential flow or the
+     GitOps ApplicationSet while it runs).
+   - **Idempotent re-run** (bob's workspace already exists — the demo-day
+     path, per the prerequisites checklist): the SAME steps complete in
+     seconds-to-minutes (observed: register 12s, Argo 6s, VM 7s, start 9s,
+     install 18s). The VM is left in place — NO restart (pod/KubeVirt age
+     unchanged) — and the registry vaultPrefix stays the SAME (e.g.
+     `secret/data/hub/saw-bob/<hash>`); the keys are re-stored in Vault
+     under the same prefix. The audience sees the whole pipeline flash by
+     in under a minute.
 5. Catalog: the `saw-bob` entity appears right after the register step, with
    status **Requested → Creating → Starting the VM → Installing → Ready**;
    the **Tekton/CI** tab on `saw-bob` shows the pipeline graph with each
    task's log.
-6. Optional secondary: ArgoCD shows the `portal-ws-bob` Application (the
-   ApplicationSet-delivered workspace).
-7. Jump to bob's READY workspace: bob's OpenClaw UI at
-   `bob-default-notebook-ui.apps.<cluster-domain>` (pre-provisioned for the
-   jump; no ~10 min cut needed).
+   NOTE: the Requested → … → Ready progression is only visible on FIRST-TIME
+   provisioning — on an idempotent re-run the entity is already **Ready** and
+   no status progression is shown to the audience.
+6. OPTIONAL — skip if under time pressure: ArgoCD shows the `portal-ws-bob`
+   Application (the ApplicationSet-delivered workspace). Use it only if the
+   audience asks where the workspace's Argo resources live, or to reinforce
+   the GitOps story.
+7. OPTIONAL — skip if under time pressure: jump to bob's READY workspace,
+   bob's OpenClaw UI at `bob-default-notebook-ui.apps.<cluster-domain>`
+   (pre-provisioned for the jump; no provisioning wait). A good closer if
+   time allows — it proves the provisioned workspace is real and usable end
+   to end.
 
 ```bash
 # Verify the workspace is ready:
@@ -553,6 +589,13 @@ curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -
   `openshell provider create --name mattermost --type mattermost
   --credential MATTERMOST_TOKEN=...` (if missing), then
   `openshell sandbox provider attach notebook mattermost`.
+- saw-agent PAT lost or expired: re-create it in Mattermost (Account
+  Settings → Security → Personal Access Tokens, as the `saw-agent` user or
+  by an admin on its behalf), export it as `MATTERMOST_TOKEN`, then update
+  the in-VM provider credential (`openshell provider create --name
+  mattermost --type mattermost --credential MATTERMOST_TOKEN=${MATTERMOST_TOKEN}`
+  — delete the stale mattermost provider first if its token is baked in) and
+  re-attach it to sandbox `notebook`.
 - Beat 1 agent fetch of the Mattermost channel may fail with EACCES
   "transparent TCP mapping is expired" — the supervisor's policy-DNS mappings
   have a ~10-15s TTL and agent-spawned processes can hit an expired mapping
