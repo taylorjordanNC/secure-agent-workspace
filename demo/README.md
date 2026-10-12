@@ -55,9 +55,10 @@ helm install radicale demo/charts/radicale -n openshell-agents
 helm install mattermost demo/charts/mattermost -n openshell-agents
 ```
 
-On OpenShift with restricted-v2, Mattermost may need the service account
-anyuid grant; the charts already set the security contexts and probe delays
-for that case.
+On OpenShift with restricted-v2, ALL THREE demo charts may need the service
+account anyuid grant (radicale and mattermost-postgres also fail restricted-v2,
+not just Mattermost); the charts already set the security contexts and probe
+delays for that case.
 
 ## Profiles
 
