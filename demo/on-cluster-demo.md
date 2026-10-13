@@ -103,6 +103,42 @@ open https://backstage-developer-hub-rhdh.${APPS_DOMAIN}
 open https://bob-default-notebook-ui.${APPS_DOMAIN}
 ```
 
+**Before you hit record** — the tee-up and between-run resets in one place
+(full detail: the tee-up bullet in the Prerequisites checklist below, and
+the State-reset checklist at the end of this document):
+
+- [ ] **Tee-up** (beat 2 requires the calendar capability genuinely
+  absent): remove BOTH `charts/governance-policy/profiles/calendar.yaml`
+  AND the radicale ceiling from `charts/governance-policy/policy.yaml`
+  (the sandbox network policy inherits the ceiling — the fetch still
+  returns 200 until BOTH are gone); commit + push the tracked branch;
+  `oc rollout restart deploy governance-interceptor -n openshell-agents`
+  and verify the startup profiles line has NO calendar; then detach +
+  delete the provider (`openshell sandbox provider detach notebook
+  calendar` + `openshell provider delete --name calendar`); recreate the
+  sandbox (`saw-apply` recreates it) so it picks up the policy —
+  recreating REVOKES provider attachments, so re-attach mattermost
+  afterward.
+- [ ] **Users roster** (`overrides/saw-users.yaml`): the demo path needs NO
+  entries — bob's workspace is portal-provisioned (beat 5) and alice's
+  assistant runs in the workshop VM, so the list stays reset/EMPTY
+  (`users: []`; upstream ships only `alice`). An entry makes Argo CD
+  create a manual `saw-<name>` workspace this path does not want. If you
+  provision workspaces from the file instead, add one entry per person
+  (`name` + `profiles`, e.g. `data-science`) and run `make -f
+  Makefile-quickstart keycloak-add-users` (see "Creating and storing demo
+  credentials" above).
+- [ ] **Between-run resets**: delete any probe-created providers
+  (`openshell provider list`, then `openshell provider delete --name
+  gh-demo` / `new-demo` if created); clear sandbox scratch
+  (`rm -rf /sandbox/*`); delete any prior catch-up digest in Mailpit
+  (KEEP the seeded emails); clear the #sandbox-admin posts; beat 5 needs
+  nothing (the re-run is idempotent).
+- [ ] **Verify the tee-up directly** with the pre-demo probes later in
+  this document: the beat-2 (i) radicale probe must return EACCES (a 200
+  means the tee-up is incomplete); the exfil probe must return
+  Permission denied.
+
 ## Prerequisites beyond the pattern install
 
 `./pattern.sh make install` deploys the platform, but a fresh deployer must
@@ -116,12 +152,12 @@ still do these things by hand, in this order:
    configuring; if the first run fails, re-run it once Vault is up. The
    reliable fallback is `./scripts/seed-vault.sh`, which seeds Vault via
    `oc exec` using the `vault-init` Secret's root token.
-3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
-   `make -f Makefile-quickstart keycloak-add-users` for each user in
-   `overrides/saw-users.yaml` (`alice`, `bob`, `admin`, `developer` —
-   `bob` is the beat-5 provisioned user, see the Prerequisites checklist;
-   the "Creating and storing demo credentials" section above lists the same
-   set).
+3. **Keycloak accounts** — the chart cannot create Keycloak users. Create
+   them per the "Creating and storing demo credentials" section above:
+   roster users via `overrides/saw-users.yaml` + `keycloak-add-users`
+   (generated passwords land in the `openshell-keycloak-users` Secret);
+   accounts not in the file (`bob`, `admin` — `bob` is the beat-5
+   provisioned user) individually via `keycloak-add-user KC_USER=<name>`.
 4. **Demo services** (Mailpit/Mattermost/Radicale) — NOT installed by the
    pattern. Deploy them with the standalone helm installs from
    [README.md](README.md#charts):
@@ -149,10 +185,20 @@ document; passwords and tokens stay in your session note, filled in per
 install.
 
 1. **Keycloak users** (`alice`, `bob`, `admin` — realm `openshell`): the
-   chart cannot create Keycloak users — add the demo users to
-   `overrides/saw-users.yaml` and run `make -f Makefile-quickstart
-   keycloak-add-users` for each entry (see the prerequisites above), then
-   record each password in your session note.
+   chart cannot create Keycloak users. Accounts come from
+   `overrides/saw-users.yaml` — the per-person roster (one entry per
+   person: `name` + `profiles`, e.g. `data-science`; upstream ships only
+   `alice`, so add the entries you need). `make -f Makefile-quickstart
+   keycloak-add-users` creates a Keycloak account for each entry name not
+   yet in the realm, with a GENERATED password written to the
+   `openshell-keycloak-users` Secret (Keycloak ns) — capture each password
+   into your session note when it runs. For accounts NOT in the file
+   (`bob`, `admin`), create them individually: `make -f Makefile-quickstart
+   keycloak-add-user KC_USER=bob`. NOTE for this demo path: bob's
+   workspace is portal-provisioned (beat 5), so the demo runs with the
+   users list reset/EMPTY — do NOT add bob to the file (an entry makes
+   Argo CD create a manual `saw-bob` workspace this demo path does not
+   want).
 2. **Mattermost accounts + the `saw-agent` PAT**: create the `alice`, `bob`
    and `admin` accounts on team `saw` (admin invite or account creation;
    each user sets a password — record them in the session note), then create
