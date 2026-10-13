@@ -56,8 +56,9 @@ document alone.
   at the login boundary) for a login-free take.
 - **Terminal pre-flight**: `oc` logged into the cluster, `openshell` CLI
   context on the workshop gateway, `APPS_DOMAIN` and `MATTERMOST_TOKEN`
-  exported. Passwords are session-only — NEVER baked into this file; fill
-  them in from your session sheet at record time.
+  exported. Passwords are session-only — NEVER baked into this file; create
+  them first (see "Creating and storing demo credentials" above) and fill
+  them in from your session note at record time.
 - **Login map** (which UI, which user, which beat):
 
 | Beat | Log in where | As |
@@ -117,9 +118,10 @@ still do these things by hand, in this order:
    `oc exec` using the `vault-init` Secret's root token.
 3. **Keycloak accounts** — the chart cannot create Keycloak users. Run
    `make -f Makefile-quickstart keycloak-add-users` for each user in
-   `overrides/saw-users.yaml` (`alice` and `carol` — note `carol`: she is
-   the personal-assistant user on this track and does not appear elsewhere
-   in this doc).
+   `overrides/saw-users.yaml` (`alice`, `bob`, `admin`, `developer` —
+   `bob` is the beat-5 provisioned user, see the Prerequisites checklist;
+   the "Creating and storing demo credentials" section above lists the same
+   set).
 4. **Demo services** (Mailpit/Mattermost/Radicale) — NOT installed by the
    pattern. Deploy them with the standalone helm installs from
    [README.md](README.md#charts):
@@ -137,6 +139,37 @@ helm install mattermost demo/charts/mattermost -n openshell-agents
 
 **Order:** `copy-images` → install → secrets → Keycloak users → demo
 services → walkthrough beats.
+
+## Creating and storing demo credentials
+
+The demo needs four sets of credentials. Create them in this order and store
+them in a SESSION-ONLY note (a local file outside this repo, or a password
+manager) — NEVER in any committed file. Only usernames appear in this
+document; passwords and tokens stay in your session note, filled in per
+install.
+
+1. **Keycloak users** (`alice`, `bob`, `admin` — realm `openshell`): the
+   chart cannot create Keycloak users — add the demo users to
+   `overrides/saw-users.yaml` and run `make -f Makefile-quickstart
+   keycloak-add-users` for each entry (see the prerequisites above), then
+   record each password in your session note.
+2. **Mattermost accounts + the `saw-agent` PAT**: create the `alice`, `bob`
+   and `admin` accounts on team `saw` (admin invite or account creation;
+   each user sets a password — record them in the session note), then create
+   the `saw-agent` personal access token — Account Settings → Security →
+   Personal Access Tokens, as the `saw-agent` user or by an admin on its
+   behalf. Export it as `MATTERMOST_TOKEN` and create/attach the in-VM
+   provider credential with it (commands in the Prerequisites checklist;
+   the same path recovers a lost token — see Recovery notes).
+3. **Beat-5 profile keys**: the `data-science` profile asks for the keys its
+   provider list names — an NVIDIA Build API key (build.nvidia.com) plus the
+   web-search provider key (Brave by default). Obtain both before the demo
+   and record them in the session note; they are STORED by the portal form
+   itself — step 3 of beat 5 writes them to Vault (no manual Vault write
+   needed).
+4. **Cluster/CLI access**: `oc` login for the admin user and the local
+   `openshell` CLI context (workshop gateway). These are cluster-specific
+   and expire (~24 h) — refresh from the cluster owner at session start.
 
 ## Prerequisites checklist (verify before presenting)
 
