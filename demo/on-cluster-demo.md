@@ -36,6 +36,72 @@ your own.
   takes — trim each recorded segment at the login boundary if you want a
   login-free take.
 
+## Walkthrough quick reference (live demo or recording)
+
+The rest of this document (URLs, prerequisites, pre-demo verification, beats,
+reset checklist, recovery notes) is the full script; this section is the
+quick overlay so a solo walkthrough or recording session can run from this
+document alone.
+
+- **Take the beats IN ORDER 0 → 5** (live or recorded): beat 2 requires the
+  tee-up state (the calendar capability genuinely absent — see the
+  Prerequisites checklist) and beat 4 restores it. If you re-take beats 2–4
+  later, re-do the tee-up first.
+- **If you record — where takes go**: `demo/test-recordings/` (untracked —
+  NEVER committed). Existing takes from an earlier session may live there —
+  move them aside before a fresh session so old and new takes do not mix.
+- **If you record — trim boundaries**: all logins type into MASKED password
+  fields (dots). The sso/Keycloak login typing lands in the beat-0/1/4/5
+  browser segments — start each segment AFTER the login completes (or trim
+  at the login boundary) for a login-free take.
+- **Terminal pre-flight**: `oc` logged into the cluster, `openshell` CLI
+  context on the workshop gateway, `APPS_DOMAIN` and `MATTERMOST_TOKEN`
+  exported. Passwords are session-only — NEVER baked into this file; fill
+  them in from your session sheet at record time.
+- **Login map** (which UI, which user, which beat):
+
+| Beat | Log in where | As |
+|---|---|---|
+| 0 | ArgoCD (openshift-gitops URL) | admin |
+| 1 | OpenClaw UI via `workshop-default-notebook-ui` (oauth2 → Keycloak) + Mattermost + dashboard via `workshop-webui` (admin's RIGHT pane) | alice / alice / admin |
+| 2 | none — same session (story continuity) | — |
+| 3 | dashboard via `workshop-webui` (oauth2 → Keycloak) — use a private window or end the Keycloak SSO session if the last Keycloak login was alice's | admin |
+| 4 | Mattermost: switch alice → admin (account menu → Log out; expect the "View in Browser" interstitial, then the login form) | admin |
+| 5 | Mattermost: switch admin → bob (bob posts the request) then bob → admin (admin approves); RHDH portal in a PRIVATE window or after ending the Keycloak SSO session (a backstage sign-out alone re-authenticates the previous user silently) | bob, then admin / admin |
+
+- **Go-to links per beat** (set `APPS_DOMAIN` first — same line as the
+  Prerequisites checklist; every URL here also appears in the checklist's
+  URL block):
+
+```bash
+APPS_DOMAIN=$(oc get ingress.config.openshift.io/cluster -o jsonpath='{.spec.domain}')
+
+# Beat 0 — ArgoCD app tree (arch diagram: docs/images/):
+open https://openshift-gitops-server-openshift-gitops.${APPS_DOMAIN}
+# Beat 1 — OpenClaw UI (alice; Keycloak-gated) + Mattermost #ai-platform +
+# Mailpit (digest arrival) + dashboard log view on RIGHT:
+open https://workshop-default-notebook-ui.${APPS_DOMAIN}/
+open https://mattermost-ui-openshell-agents.${APPS_DOMAIN}
+open https://mailpit-ui-openshell-agents.${APPS_DOMAIN}
+open https://workshop-webui.${APPS_DOMAIN}
+# Beat 2 — same screens as beat 1 (OpenClaw chat + Mailpit APPENG-5960 email
+# + dashboard log view for the DENIED lines):
+open https://workshop-default-notebook-ui.${APPS_DOMAIN}/
+open https://mailpit-ui-openshell-agents.${APPS_DOMAIN}
+open https://workshop-webui.${APPS_DOMAIN}
+# Beat 3 — dashboard (Workspaces + Provider profiles views):
+open https://workshop-webui.${APPS_DOMAIN}
+# Beat 4 — Mattermost #sandbox-admin + ArgoCD (saw-governance-policy
+# Application details):
+open https://mattermost-ui-openshell-agents.${APPS_DOMAIN}
+open https://openshift-gitops-server-openshift-gitops.${APPS_DOMAIN}
+# Beat 5 — Mattermost #sandbox-admin + RHDH portal + catalog; optional
+# closer: bob's OpenClaw UI:
+open https://mattermost-ui-openshell-agents.${APPS_DOMAIN}
+open https://backstage-developer-hub-rhdh.${APPS_DOMAIN}
+open https://bob-default-notebook-ui.${APPS_DOMAIN}
+```
+
 ## Prerequisites beyond the pattern install
 
 `./pattern.sh make install` deploys the platform, but a fresh deployer must
@@ -552,9 +618,12 @@ openshell sandbox exec -n notebook -- ls /etc/demo-test /usr/demo-test
 # Expected: No such file or directory
 
 # Mailpit: delete the beat-1 catch-up digest alice's agent sent so the next
-# run's arrival is unmistakable, but KEEP the 4 seeded emails:
-curl "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" | jq -r '.messages[] | select(..Subject | contains("catch-up")) | .ID' \
-  | xargs -I{} curl -X DELETE ".../api/v1/messages/{}"
+# run's arrival is unmistakable, but KEEP the seeded emails (4 realistic +
+# 1 old dry-run test + the beat-2 APPENG-5960 email — see the Prerequisites
+# checklist):
+curl -s "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages" \
+  | jq -r '.messages[] | select(.Subject | test("catch-up"; "i")) | .ID' \
+  | xargs -I{} curl -s -X DELETE "https://mailpit-ui-openshell-agents.${APPS_DOMAIN}/api/v1/messages/{}"
 # (or delete just the digest via the Mailpit UI)
 
 # Mattermost: clear the #sandbox-admin requests if posted for beats 4/5
