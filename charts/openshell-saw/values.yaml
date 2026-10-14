@@ -244,7 +244,7 @@ governance:
   # Which interceptor answers at that endpoint: interceptor (the OpenShell
   # governance interceptor) or apf (NVIDIA Agent Policy Fabric).
   # global.governance.engine (the pattern's switch) wins.
-  engine: interceptor
+  engine: apf
   # How the gateway combines its bindings with the ones the interceptor
   # declares (OpenShell binding_policy):
   #   allowlist  only the RPCs and phases listed below; the interceptor must

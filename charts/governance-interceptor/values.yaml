@@ -14,7 +14,7 @@ enabled: true
 #                ghcr.io), serving a signed bundle built from the same
 #                governance-policy files. See docs/apf.md.
 # The pattern sets global.governance.engine (values-global.yaml), which wins.
-engine: interceptor
+engine: apf
 
 # Built by .github/workflows/build-governance-interceptor.yml on main and
 # tagged with the OpenShell ref it is built from (image-builder-charts/helm/
