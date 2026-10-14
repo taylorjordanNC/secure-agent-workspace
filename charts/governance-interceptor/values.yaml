@@ -101,8 +101,9 @@ apf:
       image: ghcr.io/mkhaas/apf/apf-compile:0.1.0
 
 # Where the APF Application object is created. The pattern injects
-# global.vpArgoNamespace; argo.namespace is the fallback.
+# global.vpArgoNamespace; argo.namespace is the fallback. The fork's Argo CD
+# namespace is openshift-gitops (upstream quickstart uses vp-gitops).
 argo:
-  namespace: vp-gitops
+  namespace: openshift-gitops
   project: default
   destinationName: in-cluster
